@@ -8,8 +8,8 @@ them as `ExternalArtifact` objects consumable by `Kustomization` and
 ## Status
 
 Pre-alpha. The `ManifestGenerator` CRD
-(`manifests.fluxcd.tooling/v1alpha1`) has its full type surface in
-place — sources, inline `values`, `valuesFrom` (`ConfigMap` only),
+(`manifests.fluxcd.tooling/v1alpha1`) has its full v1alpha1 surface
+in place — sources, inline `values`, `valuesFrom` (`ConfigMap` only),
 declarative pipeline (`load`/`filter`/`map`/`group`/`merge`),
 artifacts with `forEach` and templates, plus status with conditions
 and inventory. The reconciler observes referenced source-controller
@@ -22,9 +22,12 @@ with `.values` and prior step outputs in scope, renders each
 + Helm-style helper engine, fans templates across the entries of a
 pipeline output via per-artifact `forEach` with template-expanded
 output paths, and publishes the result as `ExternalArtifact` objects.
-Helm-style partial discovery (`_helpers.tpl`) is the only piece of
-the type surface still pending; `include` and `lookupFile` continue
-to fail at execute time until slice 9 lands.
+Helm-style partial discovery is in: a `_helpers.tpl` sibling of the
+template (or any one in a parent directory up to the alias root) is
+auto-parsed into the template tree so `include` resolves named
+sub-templates, with closer files overriding same-named defines from
+parents. The `lookupFile` helper reads regular files out of the same
+alias, jailed to its root.
 
 For the full design-of-record (decisions, CRD sketch, pipeline
 semantics, template helpers, slice roadmap, current state),

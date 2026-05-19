@@ -333,7 +333,11 @@ func (r *ArtifactBuilder) renderDestPath(toRef string, data map[string]any) (str
 		return "", fmt.Errorf("invalid template destination %q: empty path", toRef)
 	}
 
-	out, err := r.Engine.Render("destination:"+toRef, []byte(pathTemplate), data)
+	// Destination paths render with a zero Options: no partial
+	// discovery (the path template lives in the spec, not in a source
+	// file with sibling helpers) and `lookupFile` is unavailable
+	// (paths must be derived from in-scope values, not read from disk).
+	out, err := r.Engine.Render("destination:"+toRef, []byte(pathTemplate), data, render.Options{})
 	if err != nil {
 		return "", err
 	}
@@ -354,6 +358,14 @@ func (r *ArtifactBuilder) renderDestPath(toRef string, data map[string]any) (str
 // engine is the original `@alias/<path>` reference from the spec (with
 // the current iteration label appended when forEach is in use) so
 // parse / execute errors point straight back at the spec entry.
+//
+// The render is given a render.Options carrying:
+//   - every `_helpers.tpl` discovered between the alias root and the
+//     template's directory (root-first → template-closest order so a
+//     closer file's `define` wins);
+//   - a `lookupFile` closure jailed to srcRoot, so a template that
+//     calls `lookupFile "rel/path"` reads through the same os.Root
+//     and cannot escape its alias scope.
 func (r *ArtifactBuilder) renderTemplate(srcRoot *os.Root,
 	srcPath, tmplName, iterLabel string,
 	data map[string]any) ([]byte, error) {
@@ -374,11 +386,19 @@ func (r *ArtifactBuilder) renderTemplate(srcRoot *os.Root,
 			srcPath, maxTemplateFileBytes)
 	}
 
+	partials, err := discoverPartials(srcRoot, srcPath)
+	if err != nil {
+		return nil, fmt.Errorf("discover partials for %q: %w", srcPath, err)
+	}
+
 	name := tmplName
 	if iterLabel != "" {
 		name = tmplName + " (" + iterLabel + ")"
 	}
-	out, err := r.Engine.Render(name, src, data)
+	out, err := r.Engine.Render(name, src, data, render.Options{
+		Partials:   partials,
+		LookupFile: newLookupFile(srcRoot),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("render: %w", err)
 	}
