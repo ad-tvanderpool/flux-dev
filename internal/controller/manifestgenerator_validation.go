@@ -26,9 +26,9 @@ import (
 // validateSpec performs runtime validation that cannot be expressed via
 // kubebuilder markers.
 //
-// Slice-4 scope: sources + artifacts + pipeline (load verb only). values,
-// valuesFrom and per-artifact forEach are still accepted by the CRD
-// schema but rejected here because slices 5–8 have not landed yet.
+// Slice-5 scope: sources + artifacts + pipeline (all five verbs).
+// values, valuesFrom and per-artifact forEach are still accepted by the
+// CRD schema but rejected here because slices 7–8 have not landed yet.
 // Tighten / relax these checks in the slice that introduces the
 // corresponding feature.
 func (r *ManifestGeneratorReconciler) validateSpec(obj *mgapi.ManifestGenerator) error {

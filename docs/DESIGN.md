@@ -208,7 +208,7 @@ for each slice live in the slice itself.
 | 2 | CRD + types: real `ManifestGenerator` spec (sources, values, valuesFrom, pipeline, artifacts) + status, with kubebuilder validation, deepcopy, CRD generation | **Done** |
 | 3 | End-to-end source-fetch + `ExternalArtifact` publishing (pass-through copy, no pipeline yet). Proves the source-controller integration end-to-end before any pipeline logic. | **Done** |
 | 4 | Pipeline verb: `load` (`yaml` / `json` / `text` / `raw`; single + glob; `as: list` / `as: map` with `keyExpr`) | **Done** |
-| 5 | Pipeline verbs: `filter`, `map`, `group`, `merge` | Not started |
+| 5 | Pipeline verbs: `filter`, `map`, `group`, `merge` | **Done** |
 | 6 | Template engine interface + Go/Sprig implementation + Helm-style helpers | Not started |
 | 7 | `artifacts.forEach` + multi-template artifacts + output-path templating | Not started |
 | 8 | `values` + `valuesFrom` (`ConfigMap` only) | Not started |
@@ -479,7 +479,94 @@ kustomize build config/default
 suite and the slice-4 pipeline suite; the `internal/pipeline` unit
 tests run alongside under `go test ./...`.
 
-## 14. Open questions
+## 14. Slice 5 — done
+
+The remaining four pipeline verbs land. `Compile` now accepts every
+verb defined in §6, and the reconciler evaluates them end-to-end after
+the source fetch. Pipeline outputs are still not consumed by the
+artifact builder — that wiring lands with the template engine and
+`forEach` in slices 6/7 — so the published `ExternalArtifact` remains
+a pass-through copy. Files added or changed in this slice:
+
+- `internal/pipeline/filter.go` — the `filter` verb. Renders the
+  `where` template against each item of a `[]any` or `map[string]any`
+  input, trims, and interprets the result via `strconv.ParseBool`
+  (with empty → false). Anything else is a hard error so a typo
+  stalls the pipeline rather than silently keeping every item.
+  Output preserves the input shape.
+- `internal/pipeline/mapverb.go` — the `map` verb (file named
+  `mapverb.go` because `map` is a Go keyword). Renders `expr` per
+  item, then parses the rendered string as YAML to form the new item
+  value, mirroring Helm's `tpl`-then-parse contract. Output keeps
+  the input shape (list-in/list-out, map-in/map-out).
+- `internal/pipeline/group.go` — the `group` verb. Buckets a list
+  input into a `map[string]any` of `[]any` by `keyExpr`. Within each
+  bucket items keep input order. Map inputs are rejected — they're
+  already keyed; use `map` first if you need to flatten one.
+- `internal/pipeline/merge.go` — the `merge` verb. Deep-merges 2–100
+  prior outputs left-to-right with Helm values semantics (later wins
+  on conflicts, nested maps recurse, lists are replaced not
+  concatenated). Implemented around a copy-on-write `deepMerge`/
+  `deepClone` pair so merge can never mutate the inputs that earlier
+  outputs publish — the no-mutation rule in §6 is enforced
+  structurally, not by convention.
+- `internal/pipeline/iter.go` — small helpers shared by the
+  collection-iterating verbs (`listInput`, `sortedKeys`).
+- `internal/pipeline/template.go` — refactored so a single
+  `itemTemplate` backs every per-item expression (load.keyExpr,
+  filter.where, map.expr, group.keyExpr). `keyExprEvaluator` becomes
+  a thin wrapper enforcing the trim + non-empty contract. The
+  per-item bindings are unioned with prior step outputs into the
+  template data; user bindings (`value`, `key`, `index`, `path`)
+  shadow output names on collision.
+- `internal/pipeline/pipeline.go` — `Compile` now passes the set of
+  already-compiled step names into each verb compiler and enforces
+  the forward-reference rule: every `from` (including each entry of
+  `merge.from`) must name a step earlier in the spec. A step cannot
+  reference itself because the name is recorded only after a
+  successful compile. `compileStep` no longer returns "not yet
+  supported" for any verb.
+- `internal/pipeline/filter_test.go` / `mapverb_test.go` /
+  `group_test.go` / `merge_test.go` — table-driven unit tests for
+  each verb covering shape preservation, prior-output access,
+  template-error surfaces, runtime type rejections (non-collection
+  inputs, non-map merge sources), compile-time forward-reference
+  rejections, deterministic ordering, and the no-mutation guarantee
+  on merge.
+- `internal/controller/manifestgenerator_validation.go` — comment
+  refresh; the body is unchanged. Pipeline validation continues to
+  flow through `pipeline.Compile`, so all slice-5 verbs now compile
+  there too; `values`, `valuesFrom`, and `forEach` remain rejected
+  until slices 7/8 land.
+- `internal/controller_test/manifestgenerator_pipeline_verbs_test.go`
+  — envtest integration test: a `ManifestGenerator` that exercises
+  every verb (load → merge, load + load → filter → map, load →
+  group) reconciles Ready=True; a non-map `merge` source surfaces
+  `PipelineFailedReason` at runtime; a forward `filter.from`
+  reference stalls with `ValidationFailedReason`.
+
+### Slice-5 spec interpretation (temporary)
+
+The CRD still admits `values`, `valuesFrom`, and
+`artifacts[*].forEach`; the validator continues to mark the object
+Stalled with `ValidationFailedReason` if any are set. Slices 6/7 will
+plumb pipeline outputs into the template render path and add
+`forEach`; slice 8 will wire `values` + `valuesFrom`.
+
+### Verified
+
+Inside the dev container:
+
+```sh
+make tidy fmt vet manifests generate manager test clean
+kustomize build config/default
+```
+
+`make test` brings up envtest and runs the slice-3 / slice-4 suites
+alongside the slice-5 verb suite; the `internal/pipeline` unit tests
+run under `go test ./...`.
+
+## 15. Open questions
 
 None blocking. Defer until the relevant slice:
 

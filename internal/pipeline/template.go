@@ -25,10 +25,10 @@ import (
 )
 
 // pipelineFuncMap returns the Go text/template function map used by
-// per-item pipeline expressions (load.keyExpr, and later filter.where /
-// map.expr / group.keyExpr). It is Sprig minus the environment-leaking
-// helpers (`env`, `expandenv`) and minus templating recursion helpers
-// that only make sense inside the artifact render engine (slice 6).
+// per-item pipeline expressions (load.keyExpr, filter.where, map.expr,
+// group.keyExpr). It is Sprig minus the environment-leaking helpers
+// (`env`, `expandenv`) and minus templating-recursion helpers that only
+// make sense inside the artifact render engine (slice 6).
 //
 // Keep this in sync with the eventual render engine FuncMap so the
 // pipeline and template surfaces agree on what's available.
@@ -47,45 +47,92 @@ func pipelineFuncMap() template.FuncMap {
 	return fm
 }
 
-// keyExprEvaluator compiles a `keyExpr` template fragment once and
-// runs it per-item at evaluation time.
-type keyExprEvaluator struct {
+// itemTemplate is a compiled per-item template fragment. The same shape
+// backs every pipeline expression: `load.keyExpr`, `filter.where`,
+// `map.expr`, and `group.keyExpr` each compile once and render per item
+// at evaluation time. Callers supply the per-item bindings via the data
+// map passed to render.
+type itemTemplate struct {
 	tmpl *template.Template
 }
 
-// newKeyExprEvaluator compiles expr. The template is named after the
-// step it belongs to so error messages from text/template are easy to
-// trace back to a specific pipeline entry.
-func newKeyExprEvaluator(stepName, expr string) (*keyExprEvaluator, error) {
-	tmpl, err := template.New(fmt.Sprintf("keyExpr[%s]", stepName)).
+// newItemTemplate compiles expr. field names the spec field whose value
+// is being parsed (for error messages) and stepName is the pipeline
+// step the fragment belongs to; both end up in text/template's template
+// name so parse / execution errors are easy to trace back to the spec
+// entry that produced them.
+func newItemTemplate(field, stepName, expr string) (*itemTemplate, error) {
+	if expr == "" {
+		return nil, fmt.Errorf("%s is empty", field)
+	}
+	tmpl, err := template.New(fmt.Sprintf("%s[%s]", field, stepName)).
 		Funcs(pipelineFuncMap()).
 		Option("missingkey=error").
 		Parse(expr)
 	if err != nil {
 		return nil, err
 	}
-	return &keyExprEvaluator{tmpl: tmpl}, nil
+	return &itemTemplate{tmpl: tmpl}, nil
 }
 
-// eval renders the template against the per-item bindings plus the
-// accumulated pipeline outputs, and returns the resulting key as a
-// trimmed string. An empty key is rejected so the caller can surface a
-// clear error rather than silently colliding map keys.
-func (k *keyExprEvaluator) eval(itemPath string, scope *Scope) (string, error) {
-	data := map[string]any{
-		"path": itemPath,
-	}
-	for name, val := range scope.Outputs {
-		data[name] = val
-	}
-
+// render executes the template against data and returns the raw rendered
+// string. The caller decides what to do with empty / non-conforming
+// output (trimming, parsing, truthiness checks, etc).
+func (it *itemTemplate) render(data map[string]any) (string, error) {
 	var sb strings.Builder
-	if err := k.tmpl.Execute(&sb, data); err != nil {
+	if err := it.tmpl.Execute(&sb, data); err != nil {
 		return "", err
 	}
-	out := strings.TrimSpace(sb.String())
+	return sb.String(), nil
+}
+
+// keyExprEvaluator wraps an itemTemplate compiled for a `keyExpr`
+// fragment. It enforces the shared keyExpr contract: trim the rendered
+// string, reject an empty result so the caller can surface a clear error
+// rather than silently colliding map keys.
+type keyExprEvaluator struct {
+	it *itemTemplate
+}
+
+// newKeyExprEvaluator compiles expr as a `keyExpr` fragment for the
+// named step.
+func newKeyExprEvaluator(stepName, expr string) (*keyExprEvaluator, error) {
+	it, err := newItemTemplate("keyExpr", stepName, expr)
+	if err != nil {
+		return nil, err
+	}
+	return &keyExprEvaluator{it: it}, nil
+}
+
+// eval renders the template against the supplied bindings and returns
+// the resulting key as a trimmed string. The bindings are unioned with
+// every prior step output before evaluation so a keyExpr can reference
+// earlier pipeline values the same way templates do.
+func (k *keyExprEvaluator) eval(bindings map[string]any, scope *Scope) (string, error) {
+	data := withOutputs(bindings, scope)
+	out, err := k.it.render(data)
+	if err != nil {
+		return "", err
+	}
+	out = strings.TrimSpace(out)
 	if out == "" {
 		return "", fmt.Errorf("keyExpr produced an empty key")
 	}
 	return out, nil
+}
+
+// withOutputs builds the data dictionary passed to text/template by
+// overlaying the supplied per-item bindings on top of the scope's named
+// step outputs. Per-item bindings win on collision so callers can rely
+// on `.value` / `.key` / `.index` having their well-known meanings even
+// if a prior step happens to share a name.
+func withOutputs(bindings map[string]any, scope *Scope) map[string]any {
+	data := make(map[string]any, len(bindings)+len(scope.Outputs))
+	for name, val := range scope.Outputs {
+		data[name] = val
+	}
+	for name, val := range bindings {
+		data[name] = val
+	}
+	return data
 }

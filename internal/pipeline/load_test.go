@@ -63,26 +63,6 @@ func run(t *testing.T, steps []mgapi.PipelineStep, aliases map[string]bool, sour
 	return ev.Run(context.Background(), sources)
 }
 
-func TestCompile_RejectsUnsupportedVerbs(t *testing.T) {
-	g := NewWithT(t)
-	for _, name := range []string{"filter", "map", "group", "merge"} {
-		step := mgapi.PipelineStep{Name: "x"}
-		switch name {
-		case "filter":
-			step.Filter = &mgapi.FilterStep{From: "y", Where: "{{ true }}"}
-		case "map":
-			step.Map = &mgapi.MapStep{From: "y", Expr: "{{ . }}"}
-		case "group":
-			step.Group = &mgapi.GroupStep{From: "y", KeyExpr: "{{ .k }}"}
-		case "merge":
-			step.Merge = &mgapi.MergeStep{From: []string{"a", "b"}}
-		}
-		_, err := Compile([]mgapi.PipelineStep{step}, map[string]bool{})
-		g.Expect(err).To(HaveOccurred(), "expected %s to be rejected", name)
-		g.Expect(err.Error()).To(ContainSubstring("not yet supported"))
-	}
-}
-
 func TestCompile_RejectsDuplicateStepNames(t *testing.T) {
 	g := NewWithT(t)
 	steps := []mgapi.PipelineStep{
