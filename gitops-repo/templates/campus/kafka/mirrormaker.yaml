@@ -1,0 +1,21 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: kafka--mirrormaker
+  namespace: flux-data
+spec:
+  interval: 10m0s
+  retryInterval: 15s
+  timeout: 5m0s
+  prune: true
+  sourceRef:
+    kind: ExternalArtifact
+    name: template-parts
+  path: ./kafka/mirrormaker
+  dependsOn:
+    - name: kafka--kafka
+  healthChecks:
+    - apiVersion: kafka.strimzi.io/v1beta2
+      kind: KafkaMirrorMaker2
+      name: mirror-to-core
+      namespace: kafka

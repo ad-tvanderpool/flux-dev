@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-vars-keycloak
+  namespace: flux-data
+data: {}
+  # Keycloak admin console URL (KC_HOSTNAME_ADMIN). Separated from the main
+  # hostname so the token 'iss' claim stays at :443 while the admin console
+  # is reachable via a non-privileged port-forward on :8080.
+  # Keycloak runs HTTP-only in this cluster (httpEnabled: true, no TLS keystore),
+  # so :8443 is never bound — use HTTP on port 8080 instead.
+  # Usage: kubectl port-forward svc/keycloak-service -n keycloak 8080:8080
+  #        then: http://keycloak.cluster.local:8080/admin/master/console/
+  # ADMIN_HOSTNAME: "http://keycloak.${CLUSTER_EXTERNAL_DOMAIN}:8080"

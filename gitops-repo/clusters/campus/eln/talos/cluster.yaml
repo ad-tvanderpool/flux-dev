@@ -1,0 +1,14 @@
+cluster_name: campus-eln
+cluster_domain: cluster.local
+cluster_external_domain: eln.dcis-dev.internal.applieddigital.com
+core: dev
+nodes:
+  - ip: 10.62.21.35
+  - ip: 10.62.21.36
+  - ip: 10.62.21.37
+libvirt:
+  network: cluster # network name or "bridge"
+  nodes:
+    - ip: 172.16.1.12
+    - ip: 172.16.1.13
+    - ip: 172.16.1.14

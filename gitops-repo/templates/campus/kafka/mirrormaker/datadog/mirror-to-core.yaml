@@ -1,0 +1,20 @@
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaMirrorMaker2
+metadata:
+  name: mirror-to-core
+  namespace: kafka
+spec:
+  template:
+    pod:
+      metadata:
+        annotations:
+          ad.datadoghq.com/mirrormaker2.checks: |
+            {
+              "strimzi": {
+                "instances":[
+                  {
+                    "mirror_maker_2_endpoint": "http://%%host%%:8080/metrics"
+                  }
+                ]
+              }
+            }

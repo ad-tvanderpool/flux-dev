@@ -1,0 +1,25 @@
+cluster:
+    # Globally unique identifier for this cluster (base64 encoded random 32 bytes).
+    id: lOtqR7m3XvUeSMGoTDNO_4PJVXjNcpcH5Cf95DfpviY=
+    # Shared secret of cluster (base64 encoded random 32 bytes).
+    secret: ENC[AES256_GCM,data:lhd3J3OPSGagnwqgNUdOPUXMUcbrFZYr4/+BA0XJT5+XyctRnCrzwfAqhQM=,iv:9smVJrc7R4jksib8ZCM42H73+T++CzXhDiKp7xvhoyw=,tag:7/tuV4RpiJyYkTz6Ss4dow==,type:str]
+    # The bootstrap token used to join the cluster.
+    token: ENC[AES256_GCM,data:aQaSnus0ZJnN/zQ+2E+wVTZmvVIlwPc=,iv:UPu6fN367fDYvdCPRqv9aETDVhvDL8g5mJCl2SIF/Cg=,tag:CJp84jA2IWi+OddjNIGtFA==,type:str]
+machine:
+    # The token used by the machine to join the PKI of the cluster.
+    token: ENC[AES256_GCM,data:kGjZ1bQ1LozMNt7nELRM48TjlvrCrCk=,iv:mfHQ138OMguEDQkrJgylz0t+bIEWcpy2JWb5xZe8pbE=,tag:U19IEeXkc0b/0CHUYNPLBg==,type:str]
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSB2VVNUeDVKV2c4WkRRbmRY
+            MmxvR0J4bEtxc1R4YXgxQlU2bnVtbmR3eHhjCk5UenRpUEFMWmdjWjVya3M4b0Rw
+            VEJVdTRlQWo5NzJXVmRiQ1R6L0ZpQk0KLS0tIGh4cHRwTjh1S080MmhFd2ZxNWx6
+            V1RpNllzZmdrL1N1SEY2akd1THhrZk0KEv5MMDLcRF4TE+oWeoDXvvprD9T5Xk1e
+            +I2YQ57bvqMTOeFsGPfTJvwX0Nv7OWuP6+qoxwRcAgkETls5/Htnyg==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age1837l0tzk9de4p3qtkk0f8vmq9upau3l875cf7jym8ztgaa2ajgeqx9j262
+    encrypted_regex: ^crt|key|secret|token|secretboxEncryptionSecret$
+    lastmodified: "2026-05-12T19:14:10Z"
+    mac: ENC[AES256_GCM,data:gsfQMmkb2A3uupwD/PEgwOOPqAc+Qj/SsuasLi46zqDQX6enWBZ7tDsPkhOS37vdrLTR7vWzkzm/R1d6LBxjWbvFrvYyuE+bxgve5r6D9mRXAQCaSTh95ghRc1OSe7bSLw07BgZL/01J+8ULDtt2QAVTfo5GgqpuQfb2jj0h52g=,iv:nicSzIC/PMt/GRQn6XYzyIX/uWy3EHy2KCm2b+GFZ64=,tag:Gj5TDBfkg0HYkRulCH12Jg==,type:str]
+    version: 3.13.0

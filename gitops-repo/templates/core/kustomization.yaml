@@ -1,0 +1,7 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- artifact-generator.yaml
+- base.yaml
+- ../_common/flux-instance.yaml
+- ../_common/namespace.yaml

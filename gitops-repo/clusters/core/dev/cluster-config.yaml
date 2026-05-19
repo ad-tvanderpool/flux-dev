@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-vars
+  namespace: flux-data
+data:
+  # Cluster identity
+  # CLUSTER_ZONE: "dev"
+  CLUSTER_INTERNAL_DOMAIN: "cluster.local"
+  CLUSTER_EXTERNAL_DOMAIN: "dcis-dev.internal.applieddigital.com"
+  CLUSTER_SOURCE_BRANCH: "dev2"
+  CLUSTER_SOURCE_PATH: "clusters/core/dev"
+  # CLUSTER_L2_IP_1: "172.16.1.6"
+  CLUSTER_L2_IP_1: "10.62.21.36"
+  # ## For Active/Active Version
+  # CLUSTER_L2_IP_2: "172.16.1.7"
+

@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-vars-iomete
+  namespace: flux-data
+data:
+  # Minimal iom-spark-connect driver sizing for local kind / small single-node
+  # clusters (clusters/core/ana). Overrides base/parts/iomete/vars.yaml
+  # (12 cores, 8192m) which otherwise keeps CPU requests saturated and the
+  # driver Pending with "Insufficient cpu" / "Insufficient memory".
+  #
+  # Not sized to run real Spark workloads — only so iomete-dataplane can
+  # schedule and pass health checks alongside postgres, seaweedfs, etc.
+  SPARK_CONNECT_DRIVER_CORES: "1"
+  SPARK_CONNECT_DRIVER_CORE_LIMIT: "1000m"
+  SPARK_CONNECT_DRIVER_MEMORY: "1024m"
+  IOMETE_DOMAIN_ID: "default"
+  IOMETE_DOMAIN_NAME: "Default Domain"
+  IOMETE_COMPUTE_NAME: "default-compute"
+  IOMETE_NODE_DRIVER: "driver-small"
+  IOMETE_NODE_EXECUTOR: "exec-small"
+  IOMETE_NUM_EXECUTORS: "2"

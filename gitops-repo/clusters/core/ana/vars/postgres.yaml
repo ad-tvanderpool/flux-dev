@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-vars-postgres
+  namespace: flux-data
+data:
+  PG_REQUESTS_CPU: "250m"
+  # PG_REQUESTS_MEMORY: "1Gi"
+  # PG_LIMITS_CPU: "2"
+  # PG_LIMITS_MEMORY: "2Gi"
+
+  # Single-node test cluster — three PG pods can't share one node with
+  # podAntiAffinity preferred (well, they could, but we'd be wasting the
+  # storage). Drop to a single instance and disable synchronous replication
+  # (CNPG accepts number=0 as "off"). See base/parts/postgres/vars.yaml.
+  PG_INSTANCES: "1"
+  PG_SYNCHRONOUS_NUMBER: "0"

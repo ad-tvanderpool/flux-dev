@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+metadata:
+  name: base-apps-mirrormaker
+  namespace: flux-system
+resources:
+  - mirror-to-core.yaml
+patches:
+  - path: datadog/mirror-to-core.yaml

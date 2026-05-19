@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-vars
+  namespace: flux-data
+data:
+  # Cluster identity
+  # CLUSTER_ZONE: "local"
+  CLUSTER_INTERNAL_DOMAIN: "cluster.local"
+  CLUSTER_EXTERNAL_DOMAIN: "localtest.me"
+  CLUSTER_SOURCE_BRANCH: "travis"
+  CLUSTER_SOURCE_PATH: "clusters/core/travis"
+  # Node / LB addresses that publish ingress traffic for this cluster.
+  # This value is the Flux-apply-time fallback written onto the
+  # external-dns.alpha.kubernetes.io/target annotation of the default Istio
+  # Gateway. In normal operation the node-target-annotator controller
+  # overwrites this annotation live with the sorted set of InternalIPs of
+  # nodes hosting a Ready istio-ingressgateway pod. The static value here
+  # is restored by the next Flux reconcile of the Gateway only when the
+  # controller is absent or its NodeTargetAnnotation CR has been deleted.
+  # CLUSTER_INGRESS_TARGETS: "192.168.39.53"

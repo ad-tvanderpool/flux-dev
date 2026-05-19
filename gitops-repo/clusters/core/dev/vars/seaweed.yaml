@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-vars-seaweedfs
+  namespace: flux-data
+data:
+  MASTER_REPLICAS: "1"
+  VOLUME_REPLICAS: "1"
+  FILER_REPLICAS: "1"
+  VOLUME_SIZE_LIMIT_MB: "1024"
+  VOLUME_REQUESTS_STORAGE: "2Gi"
+  VOLUME_SERVER_DISK_COUNT: "1"
+  

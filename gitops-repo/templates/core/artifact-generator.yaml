@@ -1,0 +1,60 @@
+apiVersion: source.extensions.fluxcd.io/v1beta1
+kind: ArtifactGenerator
+metadata:
+  name: template-artifact-generator
+  namespace: flux-data
+spec:
+  sources:
+    - alias: repo
+      kind: GitRepository
+      name: flux-system
+      namespace: flux-system
+  artifacts:
+    - name: base-parts
+      copy:
+        - from: "@repo/base/parts/flux-system/*.yaml"
+          to: "@artifact/flux-system/"
+        - from: "@repo/base/parts/headlamp/*.yaml"
+          to: "@artifact/headlamp/"
+        # - from: "@repo/base/parts/kafka/*.yaml"
+        #   to: "@artifact/kafka/"
+        - from: "@repo/base/parts/cert-manager/*.yaml"
+          to: "@artifact/cert-manager/"
+        - from: "@repo/base/parts/cilium/*.yaml"
+          to: "@artifact/cilium/"
+        - from: "@repo/base/parts/postgres/*.yaml"
+          to: "@artifact/postgres/"
+        - from: "@repo/base/parts/external-dns/*.yaml"
+          to: "@artifact/external-dns/"
+        - from: "@repo/base/parts/powerdns/*.yaml"
+          to: "@artifact/powerdns/"
+        - from: "@repo/base/parts/coredns/*.yaml"
+          to: "@artifact/coredns/"
+        - from: "@repo/base/parts/k8s-gateway/*.yaml"
+          to: "@artifact/k8s-gateway/"
+        - from: "@repo/base/parts/seaweedfs/*.yaml"
+          to: "@artifact/seaweedfs/"
+        - from: "@repo/base/parts/keycloak/*.yaml"
+          to: "@artifact/keycloak/"
+        - from: "@repo/base/parts/metrics-server/*.yaml"
+          to: "@artifact/metrics-server/"
+        # - from: "@repo/base/parts/docker-registry/*.yaml"
+        #   to: "@artifact/docker-registry/"
+        # - from: "@repo/base/parts/iomete/*.yaml"
+        #   to: "@artifact/iomete/"
+        # - from: "@repo/base/parts/gh-arc/*.yaml"
+        #   to: "@artifact/gh-arc/"
+        - from: "@repo/base/parts/kyverno/*.yaml"
+          to: "@artifact/kyverno/"
+        - from: "@repo/base/parts/prometheus/*.yaml"
+          to: "@artifact/prometheus/"
+        - from: "@repo/base/parts/local-path/*.yaml"
+          to: "@artifact/local-path/"
+    - name: template-parts
+      copy:
+        - from: "@repo/templates/core/parts/**"
+          to: "@artifact/"
+    - name: template-vars
+      copy:
+        - from: "@repo/templates/core/vars/**"
+          to: "@artifact/"

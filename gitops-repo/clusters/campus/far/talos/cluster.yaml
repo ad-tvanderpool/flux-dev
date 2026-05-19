@@ -1,0 +1,14 @@
+cluster_name: campus-far
+cluster_domain: cluster.local
+cluster_external_domain: far.dcis-dev.internal.applieddigital.com
+core: dev
+nodes:
+  - ip: 10.62.21.38
+  - ip: 10.62.21.39
+  - ip: 10.62.21.40
+libvirt:
+  network: cluster # network name or "bridge"
+  nodes:
+    - ip: 172.16.1.22
+    - ip: 172.16.1.23
+    - ip: 172.16.1.24

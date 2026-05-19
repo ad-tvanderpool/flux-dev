@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-vars-iomete
+  namespace: flux-data
+data:
+  # Minimal iom-spark-connect driver sizing for the local minikube dev cluster.
+  # Goal: the driver pod schedules and reaches Running so iomete-dataplane
+  # reports healthy. Not sized to actually run Spark workloads.
+  #
+  # The default 8192m memory request from base/parts/iomete/vars.yaml does not
+  # fit on a 16 GiB minikube node alongside the rest of iomete, postgres,
+  # seaweedfs, keycloak, etc. — node sits at ~89% memory requested and the
+  # driver stays Pending with "Insufficient memory".
+  SPARK_CONNECT_DRIVER_CORES: "1"
+  SPARK_CONNECT_DRIVER_CORE_LIMIT: "1000m"
+  SPARK_CONNECT_DRIVER_MEMORY: "1024m"

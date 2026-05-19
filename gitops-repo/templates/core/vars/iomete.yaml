@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: template-vars-iomete
+  namespace: flux-data
+data: {}
+  # IOMETE_VERSION: "3.17.0"
+  # IOMETE_LAKEHOUSE_BUCKET: "lakehouse"

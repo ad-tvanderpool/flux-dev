@@ -1,0 +1,49 @@
+apiVersion: fluxcd.controlplane.io/v1
+kind: FluxInstance
+metadata:
+  name: flux
+  namespace: flux-system
+spec:
+  distribution:
+    version: "2.x"
+    registry: "ghcr.io/fluxcd"
+  components:
+    - source-controller
+    - kustomize-controller
+    - helm-controller
+    - notification-controller
+    - image-reflector-controller
+    - image-automation-controller
+    - source-watcher
+  cluster:
+    type: kubernetes
+    multitenant: false
+    networkPolicy: true
+    # Internal cluster DNS domain. CoreDNS resolves *.svc.${this} to
+    # ClusterIPs. Must match kubelet --cluster-domain. External browser-facing
+    # hostnames live under ${CLUSTER_EXTERNAL_DOMAIN} and are served separately
+    # by PowerDNS / k8s-gateway via the Istio gateway.
+    domain: "${CLUSTER_INTERNAL_DOMAIN}"
+  kustomize:
+    patches:
+      - target:
+          kind: Deployment
+          name: kustomize-controller
+        # Fail Kustomization reconciliation when a postBuild substitution variable
+        # is referenced but not defined. Without this, undefined ${var} silently
+        # substitutes to empty string, which is dangerous for security-sensitive
+        # values like OIDC client secrets injected via substituteFrom.
+        patch: |
+          - op: add
+            path: /spec/template/spec/containers/0/args/-
+            value: --feature-gates=StrictPostBuildSubstitutions=true
+          - op: add
+            path: /spec/template/spec/containers/0/args/-
+            value: --requeue-dependency=5s
+  sync:
+    kind: GitRepository
+    provider: github
+    url: "https://github.com/Applied-Blockchain-Inc/hpc-dcis-cluster"
+    pullSecret: "github-app-auth"
+    ref: "refs/heads/${CLUSTER_SOURCE_BRANCH}"
+    path: "${CLUSTER_SOURCE_PATH}"

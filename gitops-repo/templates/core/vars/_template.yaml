@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: template-vars
+  namespace: flux-data
+data: {}
+  # # Default for the cluster's floating ingress IP advertised by Cilium
+  # # L2 announcements. Empty string here means "no L2 ingress IP set" —
+  # # the Cilium IPPool and LoadBalancer Service render with an empty
+  # # block / annotation, and the default Gateway's external-dns target
+  # # ends up empty so no DNS records are published. Override per-cluster
+  # # in clusters/<type>/<name>/cluster-config.yaml.
+  # CLUSTER_L2_IP_1: ""
