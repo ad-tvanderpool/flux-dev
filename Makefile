@@ -40,7 +40,7 @@ all: manager
 # Run tests
 KUBEBUILDER_ASSETS?="$(shell $(ENVTEST) --arch=$(ENVTEST_ARCH) use -i $(ENVTEST_KUBERNETES_VERSION) --bin-dir=$(ENVTEST_ASSETS_DIR) -p path)"
 test: tidy generate fmt vet manifests install-envtest download-crd-deps
-	KUBEBUILDER_ASSETS=$(KUBEBUILDER_ASSETS) go test ./... $(GO_TEST_ARGS) -coverprofile cover.out
+	KUBEBUILDER_ASSETS=$(KUBEBUILDER_ASSETS) go test ./... -race $(GO_TEST_ARGS) -coverprofile cover.out
 
 # Build manager binary
 manager: generate fmt vet

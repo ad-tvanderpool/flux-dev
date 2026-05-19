@@ -56,9 +56,12 @@ func (s *mergeStep) Name() string { return s.name }
 // wholesale. Each source must be a map[string]any so the result is
 // itself a map. The output is always a fresh tree — input outputs are
 // never mutated, so later pipeline steps see them unchanged.
-func (s *mergeStep) Eval(_ context.Context, scope *Scope) (any, error) {
+func (s *mergeStep) Eval(ctx context.Context, scope *Scope) (any, error) {
 	var acc any = map[string]any{}
 	for _, name := range s.from {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		val, ok := scope.Outputs[name]
 		if !ok {
 			return nil, fmt.Errorf("from %q is not defined", name)

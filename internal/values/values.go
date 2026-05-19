@@ -36,12 +36,6 @@ import (
 	mgapi "github.com/tvanderpool/flux-manifest-generator/api/v1alpha1"
 )
 
-// ReservedName is the key under which the merged values tree is
-// published into the template scope. Pipeline step names and
-// `forEach.as` bindings must not collide with it, so the validator
-// rejects any spec that would shadow `.values`.
-const ReservedName = "values"
-
 // FetchError marks an error whose root cause is a live ConfigMap read
 // failing or a referenced data key being absent. The controller wraps
 // errors of this kind into a SourceFetchFailedReason condition so
@@ -156,7 +150,15 @@ func (r *Resolver) resolveOne(ctx context.Context,
 		return nil, err
 	}
 	if injected == nil {
-		return map[string]any{}, nil
+		// A YAML-null payload (empty string, `~`, explicit `null`)
+		// at the root has no merge-able shape, so treat it as a
+		// no-op contribution. With a targetPath set, the null lands
+		// at that path so a spec author can explicitly clear an
+		// inherited value (matching deepMerge's "later wins" rule).
+		if ref.TargetPath == "" {
+			return nil, nil
+		}
+		return placeAtPath(ref.TargetPath, nil)
 	}
 
 	return placeAtPath(ref.TargetPath, injected)

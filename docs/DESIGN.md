@@ -566,7 +566,7 @@ kustomize build config/default
 alongside the slice-5 verb suite; the `internal/pipeline` unit tests
 run under `go test ./...`.
 
-## 16. Slice 6 — done
+## 15. Slice 6 — done
 
 The artifact render engine lands. Each `spec.artifacts[*].templates[*]`
 is now read out of its source artifact, rendered through a Go
@@ -668,7 +668,7 @@ slice-5 suites alongside the slice-6 render suite; the
 `internal/render` and `internal/pipeline` unit tests run under
 `go test ./...`.
 
-## 17. Slice 7 — done
+## 16. Slice 7 — done
 
 The artifact-build surface for v1alpha1 reaches its final shape (minus
 `values` / `valuesFrom` in slice 8 and `_helpers.tpl` partial discovery
@@ -751,7 +751,7 @@ slice-5 / slice-6 suites alongside the slice-7 `forEach` and
 multi-template suites; the `internal/builder`, `internal/render`,
 and `internal/pipeline` unit tests run under `go test ./...`.
 
-## 18. Slice 8 — done
+## 17. Slice 8 — done
 
 `spec.values` (inline) and `spec.valuesFrom` (`ConfigMap` only) land
 in this slice. The validator's last temporary rejections are gone; the
@@ -857,7 +857,7 @@ suites alongside the slice-8 values suite; the `internal/values`,
 `internal/pipeline`, `internal/render`, and `internal/builder` unit
 tests run under `go test ./...`.
 
-## 20. Slice 9 — done
+## 18. Slice 9 — done
 
 Helm-style partial discovery lands. The render engine grows a tiny
 per-call options struct so the builder can hand in auxiliary template
@@ -975,7 +975,7 @@ suites alongside the slice-9 partials + `lookupFile` suite; the
 `internal/builder`, `internal/render`, `internal/values`,
 `internal/pipeline` unit tests run under `go test ./...`.
 
-## 21. Open questions
+## 19. Open questions
 
 None blocking. Defer until the relevant slice:
 

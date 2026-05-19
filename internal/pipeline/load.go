@@ -193,12 +193,13 @@ func splitSourceRef(ref string) (alias, rest string, ok bool) {
 
 // validateGlob rejects patterns that try to escape the source root or
 // use an absolute path. Forward-slash semantics match the fs.FS shape
-// doublestar globs through.
+// doublestar globs through; path.IsAbs already covers the leading-"/"
+// case under those semantics, so no separate prefix check is needed.
 func validateGlob(pattern string) error {
 	if pattern == "" {
 		return fmt.Errorf("glob is empty")
 	}
-	if path.IsAbs(pattern) || strings.HasPrefix(pattern, "/") {
+	if path.IsAbs(pattern) {
 		return fmt.Errorf("glob must be a relative path")
 	}
 	for _, seg := range strings.Split(pattern, "/") {
