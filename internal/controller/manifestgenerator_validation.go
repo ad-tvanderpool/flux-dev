@@ -20,15 +20,17 @@ import (
 	"strings"
 
 	mgapi "github.com/tvanderpool/flux-manifest-generator/api/v1alpha1"
+	"github.com/tvanderpool/flux-manifest-generator/internal/pipeline"
 )
 
 // validateSpec performs runtime validation that cannot be expressed via
 // kubebuilder markers.
 //
-// Slice-3 scope: sources + artifacts only. Pipeline, values, valuesFrom
-// and per-artifact forEach are accepted by the CRD schema but rejected
-// here because slices 4–8 have not landed yet. Tighten / relax these
-// checks in the slice that introduces the corresponding feature.
+// Slice-4 scope: sources + artifacts + pipeline (load verb only). values,
+// valuesFrom and per-artifact forEach are still accepted by the CRD
+// schema but rejected here because slices 5–8 have not landed yet.
+// Tighten / relax these checks in the slice that introduces the
+// corresponding feature.
 func (r *ManifestGeneratorReconciler) validateSpec(obj *mgapi.ManifestGenerator) error {
 	aliasMap := make(map[string]bool, len(obj.Spec.Sources))
 	for _, src := range obj.Spec.Sources {
@@ -46,8 +48,14 @@ func (r *ManifestGeneratorReconciler) validateSpec(obj *mgapi.ManifestGenerator)
 	}
 
 	if len(obj.Spec.Pipeline) > 0 {
-		return r.newTerminalErrorFor(obj, mgapi.ValidationFailedReason,
-			"spec.pipeline is not yet supported in this controller version")
+		// Compile the pipeline at validation time so syntax errors,
+		// unknown aliases, malformed keyExprs, and slice-5+ verbs all
+		// surface as terminal validation failures rather than late
+		// reconcile errors.
+		if _, err := pipeline.Compile(obj.Spec.Pipeline, aliasMap); err != nil {
+			return r.newTerminalErrorFor(obj, mgapi.ValidationFailedReason,
+				"spec.pipeline: %s", err.Error())
+		}
 	}
 	if obj.Spec.Values != nil {
 		return r.newTerminalErrorFor(obj, mgapi.ValidationFailedReason,

@@ -207,7 +207,7 @@ for each slice live in the slice itself.
 | 1 | Repo scaffolding (layout, modules, boilerplate, Makefile, empty manager binary) | Done |
 | 2 | CRD + types: real `ManifestGenerator` spec (sources, values, valuesFrom, pipeline, artifacts) + status, with kubebuilder validation, deepcopy, CRD generation | **Done** |
 | 3 | End-to-end source-fetch + `ExternalArtifact` publishing (pass-through copy, no pipeline yet). Proves the source-controller integration end-to-end before any pipeline logic. | **Done** |
-| 4 | Pipeline verb: `load` (`yaml` / `json` / `text` / `raw`; single + glob; `as: list` / `as: map` with `keyExpr`) | Not started |
+| 4 | Pipeline verb: `load` (`yaml` / `json` / `text` / `raw`; single + glob; `as: list` / `as: map` with `keyExpr`) | **Done** |
 | 5 | Pipeline verbs: `filter`, `map`, `group`, `merge` | Not started |
 | 6 | Template engine interface + Go/Sprig implementation + Helm-style helpers | Not started |
 | 7 | `artifacts.forEach` + multi-template artifacts + output-path templating | Not started |
@@ -406,14 +406,91 @@ the Namespace, CRD, manager `ClusterRole` + `ClusterRoleBinding`,
 leader-election `Role` + `RoleBinding`, the manager `Deployment`,
 and its `Service`.
 
-## 13. Open questions
+## 13. Slice 4 — done
+
+The `load` pipeline verb lands. The reconciler now accepts
+`spec.pipeline` provided every step uses `load`; the other four verbs
+(`filter`, `map`, `group`, `merge`) still fail validation until their
+slice arrives. Files added in this slice:
+
+- `internal/pipeline/pipeline.go` — `Compile` / `Run` orchestration,
+  `Step` interface, `Scope`, `Outputs`. Steps are evaluated in spec
+  order; each step's return value lands in `Outputs[stepName]` and
+  becomes visible to later steps via the template `Scope`.
+- `internal/pipeline/load.go` — the `load` verb. Parses the
+  `@<alias>/<glob>` reference, validates it (no `..`, no absolute
+  paths), expands the glob via `bmatcuk/doublestar/v4` over
+  `os.DirFS` so matches are confined to the fetched source root, then
+  decodes each match by format:
+  - `yaml` (default) → `sigs.k8s.io/yaml` (parsed `any`)
+  - `json` → `encoding/json` (parsed `any`)
+  - `text` → `string`
+  - `raw` → `[]byte`
+  Single-file references return the value directly. Globs return a
+  sorted `[]any` (`as: list`, default) or a `map[string]any` keyed by
+  the per-item `keyExpr` (`as: map`). Empty glob matches yield an
+  empty list/map rather than failing, mirroring shell glob ergonomics.
+  Each file is bounded by `maxLoadFileBytes` (10 MiB) so a hostile
+  source can't OOM the controller.
+- `internal/pipeline/template.go` — Sprig-backed evaluator for
+  per-item `keyExpr` template fragments. The function map is Sprig's
+  `TxtFuncMap` with the environment-leaking helpers (`env`,
+  `expandenv`) and the render-only helpers (`include`, `tpl`)
+  deleted; slice 6's template engine will share the same shape.
+- `internal/pipeline/load_test.go` — table-driven unit tests covering
+  every format, single + glob + double-star, list and map shapes,
+  duplicate / empty keyExpr keys, invalid YAML/JSON, missing files,
+  unknown aliases, parent-segment refs, oversize files, and step-to-
+  step output propagation.
+- `internal/controller/manifestgenerator_pipeline.go` — wires
+  `pipeline.Compile`/`Run` into the reconcile loop after sources are
+  fetched. Pipeline outputs are not yet consumed by the artifact
+  builder (slices 6/7 will), but evaluation failures surface as
+  `PipelineFailedReason` against the Ready condition.
+- `internal/controller/manifestgenerator_validation.go` — pipeline
+  branch now compiles the spec via `pipeline.Compile` at validation
+  time, so syntax errors, unknown aliases, malformed keyExprs and
+  slice-5+ verbs all stall the object with `ValidationFailedReason`
+  before any source fetch.
+- `internal/controller_test/manifestgenerator_pipeline_test.go` —
+  envtest integration test: a `ManifestGenerator` with both a
+  single-file load and a glob-as-map load reconciles Ready=True; a
+  syntactically-broken keyExpr stalls with `ValidationFailedReason`;
+  a missing runtime file surfaces `PipelineFailedReason`.
+
+### Slice-4 spec interpretation (temporary)
+
+The CRD still admits `values`, `valuesFrom`, and
+`artifacts[*].forEach`, but the validator continues to mark the object
+Stalled with `ValidationFailedReason` if any are set. Slices 5–8 will
+replace those rejections, and slice 6/7 will plumb pipeline outputs
+into the template render path.
+
+### Verified
+
+Inside the dev container:
+
+```sh
+make tidy fmt vet manifests generate manager test clean
+kustomize build config/default
+```
+
+`make test` brings up envtest and runs both the slice-3 pass-through
+suite and the slice-4 pipeline suite; the `internal/pipeline` unit
+tests run alongside under `go test ./...`.
+
+## 14. Open questions
 
 None blocking. Defer until the relevant slice:
 
-- Final shape of pipeline value types in the controller's Go layer
-  (typed structs vs. `any` tree). Decide in slice 4 once the first
-  `load` implementation is concrete.
+- Final shape of pipeline value types in the controller's Go layer:
+  the slice-4 implementation uses untyped `any` trees (the YAML
+  decoder's natural shape). Revisit if filter/map/group/merge need
+  stricter typing.
 - Whether `keyExpr` and `where` get a CEL backend in addition to Go
   template fragments. Likely not for v1; revisit if templates feel
   awkward.
+- Whether to factor the pipeline's Sprig FuncMap out into a shared
+  `internal/template` package once slice 6's render engine wants the
+  same surface. Trivial mechanical change; deferred until that slice.
 - Manager image base and CI. Out of scope until v0.1.0 release prep.

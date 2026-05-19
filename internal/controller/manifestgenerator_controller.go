@@ -167,6 +167,18 @@ func (r *ManifestGeneratorReconciler) reconcile(ctx context.Context,
 		return ctrl.Result{RequeueAfter: r.DependencyRequeueInterval}, nil
 	}
 
+	// Pipeline outputs are not yet consumed by the artifact builder;
+	// slices 6/7 will pass them into the template engine and forEach.
+	// We still run the pipeline here so load/parse failures surface
+	// against the same Ready condition the rest of the reconciler uses.
+	if _, err := r.runPipeline(ctx, obj, localSources); err != nil {
+		msg := fmt.Sprintf("pipeline failed: %s", err.Error())
+		gotkconditions.MarkFalse(obj, gotkmeta.ReadyCondition, mgapi.PipelineFailedReason, "%s", msg)
+		r.Event(obj, corev1.EventTypeWarning, mgapi.PipelineFailedReason, msg)
+		log.Error(err, "pipeline evaluation failed")
+		return ctrl.Result{}, err
+	}
+
 	eaRefs := make([]mgapi.ExternalArtifactReference, 0, len(obj.Spec.Artifacts))
 	artifactBuilder := builder.New(r.Storage)
 
