@@ -21,31 +21,8 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/Masterminds/sprig/v3"
+	mgtemplate "github.com/tvanderpool/flux-manifest-generator/internal/template"
 )
-
-// pipelineFuncMap returns the Go text/template function map used by
-// per-item pipeline expressions (load.keyExpr, filter.where, map.expr,
-// group.keyExpr). It is Sprig minus the environment-leaking helpers
-// (`env`, `expandenv`) and minus templating-recursion helpers that only
-// make sense inside the artifact render engine (slice 6).
-//
-// Keep this in sync with the eventual render engine FuncMap so the
-// pipeline and template surfaces agree on what's available.
-func pipelineFuncMap() template.FuncMap {
-	fm := sprig.TxtFuncMap()
-	// Helm disables these for the same reason: they leak host state into
-	// rendered output. We will follow suit in slice 6 for the artifact
-	// renderer and apply the same policy here.
-	delete(fm, "env")
-	delete(fm, "expandenv")
-	// `include` and `tpl` are Helm-style helpers that only make sense
-	// when a render engine is in scope; pipeline expressions evaluate
-	// against scalar item bindings, not template trees.
-	delete(fm, "include")
-	delete(fm, "tpl")
-	return fm
-}
 
 // itemTemplate is a compiled per-item template fragment. The same shape
 // backs every pipeline expression: `load.keyExpr`, `filter.where`,
@@ -66,7 +43,7 @@ func newItemTemplate(field, stepName, expr string) (*itemTemplate, error) {
 		return nil, fmt.Errorf("%s is empty", field)
 	}
 	tmpl, err := template.New(fmt.Sprintf("%s[%s]", field, stepName)).
-		Funcs(pipelineFuncMap()).
+		Funcs(mgtemplate.FuncMap()).
 		Option("missingkey=error").
 		Parse(expr)
 	if err != nil {

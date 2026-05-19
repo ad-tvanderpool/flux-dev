@@ -15,10 +15,12 @@ artifacts with `forEach` and templates, plus status with conditions
 and inventory. The reconciler observes referenced source-controller
 artifacts, fetches them, evaluates the full pipeline
 (`load`/`filter`/`map`/`group`/`merge`) against the fetched files,
-and publishes the configured templates as `ExternalArtifact` objects
-(pass-through copy, no templating yet). `values` / `valuesFrom`, the
-template engine, `forEach`, and Helm-style partials are not yet
-wired and are rejected by the validator.
+renders each `spec.artifacts[*].templates[*]` through the Go
+text/template + Sprig + Helm-style helper engine (with pipeline
+outputs at the top of the template scope), and publishes the result
+as `ExternalArtifact` objects. `values` / `valuesFrom`, `forEach`
+(plus output-path templating), and Helm-style partial discovery are
+not yet wired and are rejected by the validator.
 
 For the full design-of-record (decisions, CRD sketch, pipeline
 semantics, template helpers, slice roadmap, current state),

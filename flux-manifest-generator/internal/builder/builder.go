@@ -16,17 +16,24 @@ limitations under the License.
 
 // Package builder assembles ManifestGenerator artifact tarballs.
 //
-// In slice 3 the builder is a pure pass-through copy: each
-// `templates[].from` is treated literally as a path inside the named
-// source artifact and copied to `templates[].to` inside the resulting
-// tarball, with no templating or pipeline evaluation. Later slices
-// will replace this with a real render pipeline.
+// In slice 6 the builder is a single-file template renderer: each
+// `templates[].from` is interpreted as a literal path inside the named
+// source artifact, read into memory, rendered through the supplied
+// render.Engine, and written verbatim to `templates[].to` inside the
+// staged tarball. Pipeline outputs are placed at the top level of the
+// template scope so a template can read them as `.<stepName>`.
+//
+// Directory references in `from` are intentionally rejected — once
+// rendering is in play, a directory copy has no well-defined semantics
+// (which template scope, which output names?). Slice 7's `forEach` is
+// the right answer when an author needs to fan a single template over
+// a collection.
 package builder
 
 import (
 	"context"
 	"fmt"
-	"io/fs"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,17 +45,28 @@ import (
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 
 	mgapi "github.com/tvanderpool/flux-manifest-generator/api/v1alpha1"
+	"github.com/tvanderpool/flux-manifest-generator/internal/render"
 )
+
+// maxTemplateFileBytes caps the bytes read per template source file
+// during render. Files over the cap fail with a clear error rather
+// than letting a hostile or accidentally huge file balloon the
+// controller's memory. The cap mirrors the pipeline `load` verb's
+// per-file limit so authors see the same ceiling whichever path they
+// take to read a file.
+const maxTemplateFileBytes int64 = 10 << 20 // 10 MiB
 
 // ArtifactBuilder turns a ManifestArtifact spec plus a set of fetched
 // source-controller artifact directories into a stored tarball.
 type ArtifactBuilder struct {
 	Storage *gotkstorage.Storage
+	Engine  render.Engine
 }
 
-// New creates a new ArtifactBuilder writing to the given storage.
-func New(storage *gotkstorage.Storage) *ArtifactBuilder {
-	return &ArtifactBuilder{Storage: storage}
+// New creates a new ArtifactBuilder writing to the given storage and
+// rendering templates through the supplied Engine.
+func New(storage *gotkstorage.Storage, engine render.Engine) *ArtifactBuilder {
+	return &ArtifactBuilder{Storage: storage, Engine: engine}
 }
 
 // Build assembles the artifact for one ManifestArtifact entry. It
@@ -56,13 +74,14 @@ func New(storage *gotkstorage.Storage) *ArtifactBuilder {
 // them into the storage backend, and returns the resulting artifact
 // metadata.
 //
-// Slice 3 semantics: each template is interpreted as a literal copy
-// from `@<alias>/<path>` to `@artifact/<path>`. Pipeline evaluation,
-// values, valuesFrom, and forEach are intentionally rejected by the
-// validation layer for now and will be added in subsequent slices.
+// data is the template scope. The controller hands the pipeline
+// outputs in (so a template can read `{{ .cluster.name }}`); later
+// slices will fold inline values, valuesFrom, and per-`forEach`
+// bindings into the same map before calling Build.
 func (r *ArtifactBuilder) Build(ctx context.Context,
 	spec *mgapi.ManifestArtifact,
 	sources map[string]string,
+	data map[string]any,
 	namespace string,
 	workspace string) (*gotkmeta.Artifact, error) {
 	stagingDir := filepath.Join(workspace, spec.Name)
@@ -70,7 +89,7 @@ func (r *ArtifactBuilder) Build(ctx context.Context,
 		return nil, fmt.Errorf("failed to create staging dir: %w", err)
 	}
 
-	if err := applyTemplates(ctx, spec.Templates, sources, stagingDir); err != nil {
+	if err := r.applyTemplates(ctx, spec.Templates, sources, data, stagingDir); err != nil {
 		return nil, fmt.Errorf("failed to assemble artifact %q: %w", spec.Name, err)
 	}
 
@@ -108,26 +127,29 @@ func (r *ArtifactBuilder) Build(ctx context.Context,
 	return artifact.DeepCopy(), nil
 }
 
-// applyTemplates resolves each TemplateSpec as a literal copy of
-// `<source-dir>/<from-path>` into `<stagingDir>/<to-path>`.
-func applyTemplates(ctx context.Context,
+// applyTemplates resolves each TemplateSpec to a regular file in the
+// named source artifact, renders it through the engine, and writes the
+// rendered bytes to the staging directory.
+func (r *ArtifactBuilder) applyTemplates(ctx context.Context,
 	templates []mgapi.TemplateSpec,
 	sources map[string]string,
+	data map[string]any,
 	stagingDir string) error {
 	for _, t := range templates {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := applyTemplate(ctx, t, sources, stagingDir); err != nil {
+		if err := r.applyTemplate(ctx, t, sources, data, stagingDir); err != nil {
 			return fmt.Errorf("template %q -> %q: %w", t.From, t.To, err)
 		}
 	}
 	return nil
 }
 
-func applyTemplate(ctx context.Context,
+func (r *ArtifactBuilder) applyTemplate(ctx context.Context,
 	tmpl mgapi.TemplateSpec,
 	sources map[string]string,
+	data map[string]any,
 	stagingDir string) error {
 	srcAlias, srcPath, err := parseSourceRef(tmpl.From)
 	if err != nil {
@@ -163,11 +185,55 @@ func applyTemplate(ctx context.Context,
 		}
 		return fmt.Errorf("failed to stat source %q: %w", srcPath, err)
 	}
-
-	if info.IsDir() {
-		return copyDir(ctx, srcRoot, srcPath, stagingRoot, destPath)
+	if !info.Mode().IsRegular() {
+		// Directory `from` is intentionally unsupported in slice 6 — see
+		// the package comment. Once `forEach` lands in slice 7, the
+		// path-templated `to:` is how authors fan a template across a
+		// collection.
+		return fmt.Errorf("source path %q is not a regular file", srcPath)
 	}
-	return copyFile(ctx, srcRoot, srcPath, stagingRoot, destPath)
+	if info.Size() > maxTemplateFileBytes {
+		return fmt.Errorf("template source %q is %d bytes which exceeds the per-file limit of %d bytes",
+			srcPath, info.Size(), maxTemplateFileBytes)
+	}
+
+	rendered, err := r.renderTemplate(srcRoot, srcPath, tmpl.From, data)
+	if err != nil {
+		return err
+	}
+
+	return writeStagedFile(stagingRoot, destPath, rendered, info.Mode())
+}
+
+// renderTemplate reads the source file, runs it through the engine,
+// and returns the rendered bytes. The template name passed to the
+// engine is the original `@alias/<path>` reference from the spec so
+// parse / execute errors point straight back at the spec entry.
+func (r *ArtifactBuilder) renderTemplate(srcRoot *os.Root,
+	srcPath, tmplName string,
+	data map[string]any) ([]byte, error) {
+	f, err := srcRoot.Open(srcPath)
+	if err != nil {
+		return nil, fmt.Errorf("open template source %q: %w", srcPath, err)
+	}
+	defer f.Close()
+
+	// LimitReader with +1 so a file that grew between Stat and Read is
+	// still caught (defense in depth alongside the Size() check).
+	src, err := io.ReadAll(io.LimitReader(f, maxTemplateFileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read template source %q: %w", srcPath, err)
+	}
+	if int64(len(src)) > maxTemplateFileBytes {
+		return nil, fmt.Errorf("template source %q exceeded the per-file limit of %d bytes during read",
+			srcPath, maxTemplateFileBytes)
+	}
+
+	out, err := r.Engine.Render(tmplName, src, data)
+	if err != nil {
+		return nil, fmt.Errorf("render: %w", err)
+	}
+	return out, nil
 }
 
 // parseSourceRef parses an `@<alias>/<path>` reference.
@@ -199,64 +265,25 @@ func parseArtifactRef(ref string) (string, error) {
 	return rel, nil
 }
 
-func copyDir(ctx context.Context,
-	srcRoot *os.Root,
-	srcPath string,
-	dstRoot *os.Root,
-	dstPath string) error {
-	return fs.WalkDir(srcRoot.FS(), srcPath, func(path string, d fs.DirEntry, err error) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(srcPath, path)
-		if err != nil {
-			return err
-		}
-		target := dstPath
-		if rel != "." {
-			target = filepath.Join(dstPath, rel)
-		}
-		if d.IsDir() {
-			return mkdirAll(dstRoot, target)
-		}
-		return copyFile(ctx, srcRoot, path, dstRoot, target)
-	})
-}
-
-func copyFile(ctx context.Context,
-	srcRoot *os.Root,
-	srcPath string,
-	dstRoot *os.Root,
-	dstPath string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+// writeStagedFile writes rendered to dstPath inside the staging root,
+// creating any intermediate directories. The destination file inherits
+// the source file's permission bits so executable templates round-trip
+// their mode through the tarball.
+func writeStagedFile(dstRoot *os.Root, dstPath string, rendered []byte, mode os.FileMode) error {
 	if dir := filepath.Dir(dstPath); dir != "." && dir != "" {
 		if err := mkdirAll(dstRoot, dir); err != nil {
-			return fmt.Errorf("failed to create destination directory %q: %w", dir, err)
+			return fmt.Errorf("create destination directory %q: %w", dir, err)
 		}
 	}
-	src, err := srcRoot.Open(srcPath)
-	if err != nil {
-		return fmt.Errorf("open source %q: %w", srcPath, err)
-	}
-	defer src.Close()
 	dst, err := dstRoot.Create(dstPath)
 	if err != nil {
 		return fmt.Errorf("create destination %q: %w", dstPath, err)
 	}
 	defer dst.Close()
-	if _, err := dst.ReadFrom(src); err != nil {
-		return fmt.Errorf("copy %q -> %q: %w", srcPath, dstPath, err)
+	if _, err := dst.Write(rendered); err != nil {
+		return fmt.Errorf("write destination %q: %w", dstPath, err)
 	}
-	info, err := src.Stat()
-	if err != nil {
-		return fmt.Errorf("stat source %q: %w", srcPath, err)
-	}
-	return dst.Chmod(info.Mode())
+	return dst.Chmod(mode)
 }
 
 func mkdirAll(root *os.Root, path string) error {

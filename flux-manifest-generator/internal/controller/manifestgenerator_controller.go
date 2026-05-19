@@ -53,6 +53,7 @@ import (
 
 	mgapi "github.com/tvanderpool/flux-manifest-generator/api/v1alpha1"
 	"github.com/tvanderpool/flux-manifest-generator/internal/builder"
+	"github.com/tvanderpool/flux-manifest-generator/internal/render"
 )
 
 // ManifestGeneratorReconciler reconciles a ManifestGenerator object.
@@ -67,6 +68,12 @@ type ManifestGeneratorReconciler struct {
 	ArtifactFetchRetries      int
 	DependencyRequeueInterval time.Duration
 	NoCrossNamespaceRefs      bool
+
+	// Engine renders artifact templates. Optional; defaults to
+	// render.NewGoEngine() the first time a reconcile needs it so
+	// callers that do not set it (most tests, the manager binary's
+	// default wiring) get a working renderer for free.
+	Engine render.Engine
 }
 
 // observedSource is the runtime view of a referenced source artifact;
@@ -167,11 +174,8 @@ func (r *ManifestGeneratorReconciler) reconcile(ctx context.Context,
 		return ctrl.Result{RequeueAfter: r.DependencyRequeueInterval}, nil
 	}
 
-	// Pipeline outputs are not yet consumed by the artifact builder;
-	// slices 6/7 will pass them into the template engine and forEach.
-	// We still run the pipeline here so load/parse failures surface
-	// against the same Ready condition the rest of the reconciler uses.
-	if _, err := r.runPipeline(ctx, obj, localSources); err != nil {
+	pipelineOutputs, err := r.runPipeline(ctx, obj, localSources)
+	if err != nil {
 		msg := fmt.Sprintf("pipeline failed: %s", err.Error())
 		gotkconditions.MarkFalse(obj, gotkmeta.ReadyCondition, mgapi.PipelineFailedReason, "%s", msg)
 		r.Event(obj, corev1.EventTypeWarning, mgapi.PipelineFailedReason, msg)
@@ -179,16 +183,33 @@ func (r *ManifestGeneratorReconciler) reconcile(ctx context.Context,
 		return ctrl.Result{}, err
 	}
 
+	// Pipeline outputs become the top-level template scope so a
+	// template can read a step's value as `.<stepName>`. Slices 7/8
+	// will fold in forEach bindings and Values/ValuesFrom on top of
+	// this same map before handing it to the builder.
+	templateData := make(map[string]any, len(pipelineOutputs))
+	for k, v := range pipelineOutputs {
+		templateData[k] = v
+	}
+
 	eaRefs := make([]mgapi.ExternalArtifactReference, 0, len(obj.Spec.Artifacts))
-	artifactBuilder := builder.New(r.Storage)
+	if r.Engine == nil {
+		r.Engine = render.NewGoEngine()
+	}
+	artifactBuilder := builder.New(r.Storage, r.Engine)
 
 	for i := range obj.Spec.Artifacts {
 		spec := &obj.Spec.Artifacts[i]
-		artifact, err := artifactBuilder.Build(ctx, spec, localSources, obj.Namespace, tmpDir)
+		artifact, err := artifactBuilder.Build(ctx, spec, localSources, templateData, obj.Namespace, tmpDir)
 		if err != nil {
+			reason := mgapi.BuildFailedReason
+			var renderErr *render.Error
+			if errors.As(err, &renderErr) {
+				reason = mgapi.RenderFailedReason
+			}
 			msg := fmt.Sprintf("%s build failed: %s", spec.Name, err.Error())
-			gotkconditions.MarkFalse(obj, gotkmeta.ReadyCondition, mgapi.BuildFailedReason, "%s", msg)
-			r.Event(obj, corev1.EventTypeWarning, mgapi.BuildFailedReason, msg)
+			gotkconditions.MarkFalse(obj, gotkmeta.ReadyCondition, reason, "%s", msg)
+			r.Event(obj, corev1.EventTypeWarning, reason, msg)
 			return ctrl.Result{}, err
 		}
 
