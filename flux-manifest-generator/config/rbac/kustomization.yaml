@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - role.yaml
+  - role_binding.yaml
+  - leader_election_role.yaml
+  - leader_election_role_binding.yaml
+  # Editor and Viewer roles for end users; not used by the controller
+  # itself but included so cluster admins can grant scoped access.
+  - manifestgenerator_editor_role.yaml
+  - manifestgenerator_viewer_role.yaml

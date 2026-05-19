@@ -1,0 +1,20 @@
+apiVersion: manifests.fluxcd.tooling/v1alpha1
+kind: ManifestGenerator
+metadata:
+  name: podinfo-passthrough
+spec:
+  # Slice 3 ships a literal pass-through copy: each `templates[].from`
+  # is interpreted as a path inside the named source artifact and
+  # copied byte-for-byte to `templates[].to` in the output tarball.
+  # Pipeline / values / valuesFrom / forEach are not yet honored.
+  interval: 5m
+  sources:
+    - alias: chart
+      kind: OCIRepository
+      name: podinfo-chart
+  artifacts:
+    - name: podinfo
+      revision: "@chart"
+      templates:
+        - from: "@chart/values.yaml"
+          to: "@artifact/values.yaml"

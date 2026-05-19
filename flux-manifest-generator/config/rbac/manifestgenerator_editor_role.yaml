@@ -1,0 +1,14 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: flux-manifest-generator
+    app.kubernetes.io/managed-by: kustomize
+  name: manifestgenerator-editor-role
+rules:
+  - apiGroups: [manifests.fluxcd.tooling]
+    resources: [manifestgenerators]
+    verbs: [create, delete, get, list, patch, update, watch]
+  - apiGroups: [manifests.fluxcd.tooling]
+    resources: [manifestgenerators/status]
+    verbs: [get]

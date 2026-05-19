@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+  - manifests_v1alpha1_manifestgenerator.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

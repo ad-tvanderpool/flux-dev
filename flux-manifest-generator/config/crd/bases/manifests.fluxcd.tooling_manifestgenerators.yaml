@@ -1,0 +1,517 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: manifestgenerators.manifests.fluxcd.tooling
+spec:
+  group: manifests.fluxcd.tooling
+  names:
+    kind: ManifestGenerator
+    listKind: ManifestGeneratorList
+    plural: manifestgenerators
+    shortNames:
+    - mg
+    singular: manifestgenerator
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].message
+      name: Status
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: ManifestGenerator is the schema for the manifestgenerators API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ManifestGeneratorSpec defines the desired state of a ManifestGenerator.
+            properties:
+              artifacts:
+                description: |-
+                  Artifacts is the list of ExternalArtifacts the controller publishes.
+                  Each entry produces exactly one ExternalArtifact tarball.
+                items:
+                  description: ManifestArtifact describes a single ExternalArtifact
+                    to publish.
+                  properties:
+                    forEach:
+                      description: |-
+                        ForEach fans the templates across the entries of a pipeline value
+                        (a list or map). Each iteration evaluates `templates[].to` with
+                        the iteration bindings in scope so each item writes to a distinct
+                        output path.
+                      properties:
+                        as:
+                          description: |-
+                            As is the binding name made available to templates. The bound
+                            value is `{key, value}` when iterating a map and `{index, value}`
+                            when iterating a list.
+                          maxLength: 63
+                          pattern: ^[a-zA-Z_][a-zA-Z0-9_]*$
+                          type: string
+                        from:
+                          description: From references a pipeline step by name.
+                          maxLength: 63
+                          pattern: ^[a-zA-Z_][a-zA-Z0-9_]*$
+                          type: string
+                      required:
+                      - as
+                      - from
+                      type: object
+                    name:
+                      description: |-
+                        Name of the generated ExternalArtifact object. Must be unique
+                        across the ManifestGenerator's `spec.artifacts`.
+                      maxLength: 253
+                      pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                      type: string
+                    originRevision:
+                      description: |-
+                        OriginRevision sets the `org.opencontainers.image.revision`
+                        annotation on the generated artifact metadata when the referenced
+                        source alias has an origin revision. Ignored otherwise.
+                      maxLength: 64
+                      pattern: ^@([a-z0-9]([a-z0-9_-]*[a-z0-9])?)$
+                      type: string
+                    revision:
+                      description: |-
+                        Revision optionally mirrors the revision of a source alias. When
+                        unset, the controller computes a content-addressed revision from
+                        the rendered tarball.
+                      maxLength: 64
+                      pattern: ^@([a-z0-9]([a-z0-9_-]*[a-z0-9])?)$
+                      type: string
+                    templates:
+                      description: |-
+                        Templates is the ordered list of template files rendered into the
+                        artifact tarball.
+                      items:
+                        description: TemplateSpec describes one template render within
+                          an artifact.
+                        properties:
+                          from:
+                            description: |-
+                              From is the `@alias/<path>` reference to the template file inside
+                              a source artifact. `@artifact/...` is not valid here (templates
+                              are inputs, not outputs).
+                            maxLength: 1024
+                            pattern: ^@([a-z0-9]([a-z0-9_-]*[a-z0-9])?)/(.+)$
+                            type: string
+                          to:
+                            description: |-
+                              To is the path within the output artifact tarball; must begin
+                              with `@artifact/`. May contain Go template fragments expanded
+                              against the current iteration bindings when `forEach` is set.
+                            maxLength: 1024
+                            pattern: ^@(artifact)/(.+)$
+                            type: string
+                        required:
+                        - from
+                        - to
+                        type: object
+                      maxItems: 1000
+                      minItems: 1
+                      type: array
+                  required:
+                  - name
+                  - templates
+                  type: object
+                maxItems: 1000
+                minItems: 1
+                type: array
+              interval:
+                description: |-
+                  Interval at which to reconcile the ManifestGenerator. The actual
+                  interval is jittered to spread load across many objects. Parsing
+                  follows Go's time.ParseDuration via metav1.Duration, matching the
+                  behaviour of every other Flux API; no extra pattern is enforced.
+                type: string
+              pipeline:
+                description: |-
+                  Pipeline is the list of declarative data-shaping steps. Each step
+                  produces a single named output that later steps reference by name;
+                  ordering is implied by data dependency, not list position.
+                items:
+                  description: |-
+                    PipelineStep is one declarative data-shaping operation. Each step has
+                    a unique name and exactly one verb. Later steps reference earlier
+                    outputs by name.
+                  properties:
+                    filter:
+                      description: Filter keeps items of a previous step matching
+                        `where`.
+                      properties:
+                        from:
+                          description: From references a previous pipeline step by
+                            name.
+                          maxLength: 63
+                          pattern: ^[a-zA-Z_][a-zA-Z0-9_]*$
+                          type: string
+                        where:
+                          description: |-
+                            Where is a Go template fragment evaluated per item. Bindings:
+                            `.value` (the item), `.key` (map key) or `.index` (list index), and
+                            the standard root context (`.values`, prior step outputs).
+                          maxLength: 4096
+                          type: string
+                      required:
+                      - from
+                      - where
+                      type: object
+                    group:
+                      description: Group buckets a list into a map of lists by `keyExpr`.
+                      properties:
+                        from:
+                          description: From references a previous pipeline step by
+                            name.
+                          maxLength: 63
+                          pattern: ^[a-zA-Z_][a-zA-Z0-9_]*$
+                          type: string
+                        keyExpr:
+                          description: |-
+                            KeyExpr is a Go template fragment evaluated per item to produce a
+                            group key. The result is converted to a string.
+                          maxLength: 1024
+                          type: string
+                      required:
+                      - from
+                      - keyExpr
+                      type: object
+                    load:
+                      description: Load reads file(s) from a source artifact.
+                      properties:
+                        as:
+                          default: list
+                          description: |-
+                            As selects the output collection shape when `from` is a glob.
+                            Ignored when `from` resolves to a single file.
+                          enum:
+                          - list
+                          - map
+                          type: string
+                        format:
+                          default: yaml
+                          description: Format selects the file decoder.
+                          enum:
+                          - yaml
+                          - json
+                          - text
+                          - raw
+                          type: string
+                        from:
+                          description: From is the `@alias/<glob>` reference into
+                            a source artifact.
+                          maxLength: 1024
+                          pattern: ^@([a-z0-9]([a-z0-9_-]*[a-z0-9])?)/(.+)$
+                          type: string
+                        keyExpr:
+                          description: |-
+                            KeyExpr is a Go template fragment evaluated per loaded item to
+                            produce a map key. Required when `as: map`; ignored otherwise.
+                          maxLength: 1024
+                          type: string
+                      required:
+                      - from
+                      type: object
+                    map:
+                      description: Map transforms each item of a previous step via
+                        `expr`.
+                      properties:
+                        expr:
+                          description: |-
+                            Expr is a Go template fragment evaluated per item; the rendered
+                            string is parsed as YAML to form the new item value.
+                          maxLength: 4096
+                          type: string
+                        from:
+                          description: From references a previous pipeline step by
+                            name.
+                          maxLength: 63
+                          pattern: ^[a-zA-Z_][a-zA-Z0-9_]*$
+                          type: string
+                      required:
+                      - expr
+                      - from
+                      type: object
+                    merge:
+                      description: Merge deep-merges multiple previous outputs into
+                        a single object.
+                      properties:
+                        from:
+                          description: From lists the previous pipeline steps to merge,
+                            in order.
+                          items:
+                            type: string
+                          maxItems: 100
+                          minItems: 2
+                          type: array
+                      required:
+                      - from
+                      type: object
+                    name:
+                      description: |-
+                        Name of the step. Must be unique within the pipeline and a valid
+                        Go-style identifier; it becomes the key under which later steps
+                        see this step's output.
+                      maxLength: 63
+                      pattern: ^[a-zA-Z_][a-zA-Z0-9_]*$
+                      type: string
+                  required:
+                  - name
+                  type: object
+                  x-kubernetes-validations:
+                  - message: pipeline step must set exactly one of load, filter, map,
+                      group, merge
+                    rule: '[has(self.load), has(self.filter), has(self.map), has(self.group),
+                      has(self.merge)].filter(x, x).size() == 1'
+                maxItems: 1000
+                type: array
+              sources:
+                description: |-
+                  Sources is the list of Flux source-controller resources whose
+                  artifacts provide input files for the pipeline and templates. Each
+                  entry is referenced elsewhere in the spec by `@alias`.
+                items:
+                  description: SourceReference identifies a Flux source-controller
+                    object by alias.
+                  properties:
+                    alias:
+                      description: |-
+                        Alias is the local name used to reference this source elsewhere in
+                        the spec via `@<alias>`. Must be unique per ManifestGenerator.
+                      maxLength: 63
+                      pattern: ^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$
+                      type: string
+                    kind:
+                      description: Kind of the referenced source object.
+                      enum:
+                      - Bucket
+                      - GitRepository
+                      - OCIRepository
+                      - HelmChart
+                      - ExternalArtifact
+                      type: string
+                    name:
+                      description: Name of the referenced source object.
+                      maxLength: 253
+                      pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                      type: string
+                    namespace:
+                      description: |-
+                        Namespace of the referenced source object. Defaults to the
+                        ManifestGenerator's namespace when empty.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                  required:
+                  - alias
+                  - kind
+                  - name
+                  type: object
+                maxItems: 1000
+                minItems: 1
+                type: array
+              suspend:
+                description: |-
+                  Suspend tells the controller to stop reconciling this object.
+                  Existing ExternalArtifacts are not touched while suspended.
+                type: boolean
+              values:
+                description: |-
+                  Values is an inline data tree merged into the root `.Values`
+                  namespace that pipeline expressions and templates can read.
+                x-kubernetes-preserve-unknown-fields: true
+              valuesFrom:
+                description: |-
+                  ValuesFrom selects ConfigMaps whose data is merged into the
+                  `.Values` namespace. Entries are merged in order; inline `values`
+                  override anything injected via `valuesFrom`. Secret references are
+                  intentionally not supported in v1alpha1.
+                items:
+                  description: ValuesReference selects a ConfigMap as a source of
+                    values data.
+                  properties:
+                    kind:
+                      description: Kind of the values source. Only ConfigMap is supported
+                        in v1alpha1.
+                      enum:
+                      - ConfigMap
+                      type: string
+                    name:
+                      description: Name of the ConfigMap.
+                      maxLength: 253
+                      pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                      type: string
+                    namespace:
+                      description: |-
+                        Namespace of the ConfigMap. Defaults to the ManifestGenerator's
+                        namespace when empty.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    optional:
+                      description: |-
+                        Optional marks the reference as non-fatal when the ConfigMap or
+                        the referenced key cannot be resolved.
+                      type: boolean
+                    targetPath:
+                      description: |-
+                        TargetPath is the dot-separated path within `.Values` where the
+                        injected data is placed. Empty means merge at the root of `.Values`.
+                      maxLength: 255
+                      type: string
+                    valuesKey:
+                      description: |-
+                        ValuesKey selects a single key inside the ConfigMap data; its
+                        value is parsed as YAML and merged. When empty, every key in
+                        `data` is injected as a string keyed by its name.
+                      maxLength: 253
+                      type: string
+                  required:
+                  - kind
+                  - name
+                  type: object
+                maxItems: 100
+                type: array
+            required:
+            - artifacts
+            - interval
+            - sources
+            type: object
+          status:
+            description: ManifestGeneratorStatus defines the observed state of a ManifestGenerator.
+            properties:
+              conditions:
+                description: Conditions holds the readiness conditions of the object.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              inventory:
+                description: |-
+                  Inventory is the list of ExternalArtifacts currently owned by this
+                  ManifestGenerator; used to garbage-collect orphans on spec changes.
+                items:
+                  description: |-
+                    ExternalArtifactReference identifies a generated ExternalArtifact by
+                    name/namespace and records its content digest and filename.
+                  properties:
+                    digest:
+                      description: Digest of the artifact content.
+                      type: string
+                    filename:
+                      description: Filename of the artifact tarball.
+                      type: string
+                    name:
+                      description: Name of the referenced ExternalArtifact.
+                      type: string
+                    namespace:
+                      description: Namespace of the referenced ExternalArtifact.
+                      type: string
+                  required:
+                  - digest
+                  - filename
+                  - name
+                  - namespace
+                  type: object
+                type: array
+              lastHandledReconcileAt:
+                description: |-
+                  LastHandledReconcileAt holds the value of the most recent
+                  reconcile request value, so a change of the annotation value
+                  can be detected.
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the last reconciled generation
+                  of the spec.
+                format: int64
+                type: integer
+              observedSourcesDigest:
+                description: |-
+                  ObservedSourcesDigest is a stable hash of the source revisions
+                  observed during the most recent successful reconcile.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

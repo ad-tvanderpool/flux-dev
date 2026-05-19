@@ -1,0 +1,63 @@
+{
+  "name": "flux-manifest-generator",
+
+  // Pinned to match the `go 1.26.0` directive in go.mod / api/go.mod.
+  // Bump in lock-step with the module's go directive.
+  // Tag scheme: <image-major>-<go-version>-<debian-codename>. The
+  // image-major (currently 2) is the devcontainers/go image's own
+  // semantic version. Available distros for 1.26: bookworm, trixie.
+  "image": "mcr.microsoft.com/devcontainers/go:2-1.26-trixie",
+
+  "features": {
+    // Common shell utilities and a non-root user; the base image already
+    // provides most of these but keeping the feature makes the container
+    // self-contained if the base image is swapped.
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "username": "vscode",
+      "upgradePackages": true
+    },
+    // kubectl is needed by the `make install` / `make deploy` targets and
+    // for ad-hoc cluster interaction during integration work.
+    "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
+      "minikube": "none",
+      "helm": "none"
+    }
+    // kustomize is installed via postCreateCommand below using the
+    // upstream installer; the available community Features for kustomize
+    // are either auth-gated on GHCR or not actively maintained.
+  },
+
+  // Install kustomize, fetch Go modules, and pre-fetch controller-gen
+  // and setup-envtest so the first `make manager` / `make test` is
+  // fast and offline. See .devcontainer/post-create.sh for details.
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+
+  // Mount the host's Cursor per-project state (agent transcripts, MCP
+  // descriptors, terminal snapshots, etc.) into the container so the
+  // chat agent has access to the same context inside and outside the
+  // dev container.
+  "mounts": [
+    "source=${localEnv:HOME}/.cursor,target=/home/vscode/.cursor,type=bind,consistency=cached"
+  ],
+
+  "remoteUser": "vscode",
+
+  // Tell Cursor / VS Code which Go binary to use so its tooling (gopls,
+  // delve, etc.) lines up with the container's toolchain rather than a
+  // host install that may differ.
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "go.toolsManagement.checkForUpdates": "off",
+        "go.useLanguageServer": true,
+        "go.goroot": "/usr/local/go",
+        "go.gopath": "/go"
+      },
+      "extensions": [
+        "golang.go",
+        "redhat.vscode-yaml"
+      ]
+    }
+  }
+}
