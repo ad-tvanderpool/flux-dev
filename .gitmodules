@@ -1,0 +1,15 @@
+[submodule "flux-operator"]
+	path = flux-operator
+	url = ./flux-operator
+[submodule "helm-controller"]
+	path = helm-controller
+	url = ./helm-controller
+[submodule "kustomize-controller"]
+	path = kustomize-controller
+	url = ./kustomize-controller
+[submodule "source-controller"]
+	path = source-controller
+	url = ./source-controller
+[submodule "source-watcher"]
+	path = source-watcher
+	url = ./source-watcher
