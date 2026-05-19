@@ -1,0 +1,15 @@
+# Build artifacts
+bin/
+build/
+testbin/
+config/dev/
+
+# Test coverage
+cover.out
+
+# Editor / OS
+*.swp
+*.swo
+.idea/
+.vscode/
+.DS_Store
