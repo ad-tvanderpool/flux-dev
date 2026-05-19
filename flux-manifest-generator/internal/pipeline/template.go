@@ -99,15 +99,19 @@ func (k *keyExprEvaluator) eval(bindings map[string]any, scope *Scope) (string, 
 }
 
 // withOutputs builds the data dictionary passed to text/template by
-// overlaying the supplied per-item bindings on top of the scope's named
-// step outputs. Per-item bindings win on collision so callers can rely
-// on `.value` / `.key` / `.index` having their well-known meanings even
-// if a prior step happens to share a name.
+// overlaying the supplied per-item bindings on top of the scope's
+// named step outputs and the merged `.values` tree. Per-item bindings
+// win on collision so callers can rely on `.value` / `.key` / `.index`
+// having their well-known meanings even if a prior step happens to
+// share a name. The `values` key is reserved (Compile and the
+// controller validator both reject collisions) so it always resolves
+// to scope.Values.
 func withOutputs(bindings map[string]any, scope *Scope) map[string]any {
-	data := make(map[string]any, len(bindings)+len(scope.Outputs))
+	data := make(map[string]any, len(bindings)+len(scope.Outputs)+1)
 	for name, val := range scope.Outputs {
 		data[name] = val
 	}
+	data[ValuesKey] = scope.Values
 	for name, val := range bindings {
 		data[name] = val
 	}

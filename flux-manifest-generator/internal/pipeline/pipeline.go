@@ -32,14 +32,22 @@ import (
 	mgapi "github.com/tvanderpool/flux-manifest-generator/api/v1alpha1"
 )
 
+// ValuesKey is the key under which the merged `.values` tree is
+// published into the template scope for pipeline expressions (and the
+// artifact render scope downstream). Reserved across step names and
+// `forEach.as` bindings so it always resolves to the user's values.
+const ValuesKey = "values"
+
 // Outputs maps a step name to the value the step produced.
 type Outputs map[string]any
 
 // Scope is the read-only view a Step sees while it is being evaluated:
-// the alias→local-dir map for source artifacts, plus the outputs of
-// every previously evaluated step keyed by name.
+// the alias→local-dir map for source artifacts, the merged `.values`
+// tree from spec.values + spec.valuesFrom, and the outputs of every
+// previously evaluated step keyed by name.
 type Scope struct {
 	Sources map[string]string
+	Values  map[string]any
 	Outputs Outputs
 }
 
@@ -75,6 +83,9 @@ func Compile(spec []mgapi.PipelineStep, aliases map[string]bool) (*Evaluator, er
 		if seen[ps.Name] {
 			return nil, fmt.Errorf("step %q: duplicate step name", ps.Name)
 		}
+		if ps.Name == ValuesKey {
+			return nil, fmt.Errorf("step %q: name is reserved (shadows the .values tree)", ps.Name)
+		}
 
 		s, err := compileStep(ps, aliases, seen)
 		if err != nil {
@@ -93,9 +104,11 @@ func (e *Evaluator) Len() int { return len(e.steps) }
 
 // Run executes every step in order and returns the named outputs.
 // sources maps each declared source alias to the local directory the
-// controller fetched its artifact into.
-func (e *Evaluator) Run(ctx context.Context, sources map[string]string) (Outputs, error) {
-	scope := &Scope{Sources: sources, Outputs: make(Outputs, len(e.steps))}
+// controller fetched its artifact into. values is the resolved
+// `.values` tree (inline + valuesFrom) exposed to every per-item
+// expression under the `values` key.
+func (e *Evaluator) Run(ctx context.Context, sources map[string]string, values map[string]any) (Outputs, error) {
+	scope := &Scope{Sources: sources, Values: values, Outputs: make(Outputs, len(e.steps))}
 	for _, step := range e.steps {
 		if err := ctx.Err(); err != nil {
 			return nil, err

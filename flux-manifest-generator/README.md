@@ -13,16 +13,18 @@ place — sources, inline `values`, `valuesFrom` (`ConfigMap` only),
 declarative pipeline (`load`/`filter`/`map`/`group`/`merge`),
 artifacts with `forEach` and templates, plus status with conditions
 and inventory. The reconciler observes referenced source-controller
-artifacts, fetches them, evaluates the full pipeline
-(`load`/`filter`/`map`/`group`/`merge`) against the fetched files,
-renders each `spec.artifacts[*].templates[*]` through the Go
-text/template + Sprig + Helm-style helper engine (with pipeline
-outputs at the top of the template scope), fans templates across the
-entries of a pipeline output via per-artifact `forEach` with
-template-expanded output paths, and publishes the result as
-`ExternalArtifact` objects. `values` / `valuesFrom` and Helm-style
-partial discovery are not yet wired and are rejected by the
-validator.
+artifacts, fetches them, resolves the merged `.values` tree from
+inline `spec.values` plus every `spec.valuesFrom` ConfigMap (with a
+metadata-only ConfigMap watch driving re-reconcile on change),
+evaluates the full pipeline (`load`/`filter`/`map`/`group`/`merge`)
+with `.values` and prior step outputs in scope, renders each
+`spec.artifacts[*].templates[*]` through the Go text/template + Sprig
++ Helm-style helper engine, fans templates across the entries of a
+pipeline output via per-artifact `forEach` with template-expanded
+output paths, and publishes the result as `ExternalArtifact` objects.
+Helm-style partial discovery (`_helpers.tpl`) is the only piece of
+the type surface still pending; `include` and `lookupFile` continue
+to fail at execute time until slice 9 lands.
 
 For the full design-of-record (decisions, CRD sketch, pipeline
 semantics, template helpers, slice roadmap, current state),

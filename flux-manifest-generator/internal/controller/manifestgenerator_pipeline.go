@@ -31,11 +31,16 @@ import (
 //
 // Slice 6 onward: pipeline outputs are handed to the artifact render
 // engine as the top-level template scope so a template can read a
-// step's value as `.<stepName>`. Evaluation failures still surface as
-// PipelineFailedReason before any template render is attempted.
+// step's value as `.<stepName>`. Slice 8 plumbs the merged `.values`
+// tree (spec.values + spec.valuesFrom) into the same per-item scope
+// pipeline expressions see, so a `keyExpr`/`where`/`expr` fragment can
+// read `.values.<...>` the same way templates do. Evaluation failures
+// still surface as PipelineFailedReason before any template render is
+// attempted.
 func (r *ManifestGeneratorReconciler) runPipeline(ctx context.Context,
 	obj *mgapi.ManifestGenerator,
-	sources map[string]string) (pipeline.Outputs, error) {
+	sources map[string]string,
+	values map[string]any) (pipeline.Outputs, error) {
 	if len(obj.Spec.Pipeline) == 0 {
 		return nil, nil
 	}
@@ -49,7 +54,7 @@ func (r *ManifestGeneratorReconciler) runPipeline(ctx context.Context,
 	if err != nil {
 		return nil, fmt.Errorf("compile: %w", err)
 	}
-	outs, err := ev.Run(ctx, sources)
+	outs, err := ev.Run(ctx, sources, values)
 	if err != nil {
 		return nil, fmt.Errorf("evaluate: %w", err)
 	}
