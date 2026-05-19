@@ -111,7 +111,7 @@ func TestHelpers_RoundTrip(t *testing.T) {
 	e := NewGoEngine()
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := e.Render("h", []byte(tc.src), tc.data)
+			out, err := e.Render("h", []byte(tc.src), tc.data, Options{})
 			if tc.wantErr != "" {
 				if err == nil {
 					t.Fatalf("expected error containing %q, got nil (output %q)", tc.wantErr, out)

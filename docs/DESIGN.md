@@ -212,7 +212,7 @@ for each slice live in the slice itself.
 | 6 | Template engine interface + Go/Sprig implementation + Helm-style helpers | **Done** |
 | 7 | `artifacts.forEach` + multi-template artifacts + output-path templating | **Done** |
 | 8 | `values` + `valuesFrom` (`ConfigMap` only) | **Done** |
-| 9 | Helm-style partial templates (`_helpers.tpl` resolution) | Not started |
+| 9 | Helm-style partial templates (`_helpers.tpl` resolution) | **Done** |
 
 Each slice has unit tests in `internal/builder` / `internal/pipeline` /
 `internal/render` (pure-Go) and envtest-backed integration tests in
@@ -857,7 +857,125 @@ suites alongside the slice-8 values suite; the `internal/values`,
 `internal/pipeline`, `internal/render`, and `internal/builder` unit
 tests run under `go test ./...`.
 
-## 19. Open questions
+## 20. Slice 9 — done
+
+Helm-style partial discovery lands. The render engine grows a tiny
+per-call options struct so the builder can hand in auxiliary template
+sources and a file-lookup closure; the builder walks every directory
+between the alias root and the template's directory looking for
+`_helpers.tpl` siblings and parses each one into the template tree
+before the main template runs. `include` finally has something to
+resolve against, and the previously-deferred `lookupFile` helper is
+wired to read arbitrary regular files out of the same alias, jailed
+to its root.
+
+Files added or changed in this slice:
+
+- `internal/render/render.go` — `Engine.Render` now takes a fourth
+  argument, `render.Options{Partials, LookupFile}`. The zero value is
+  the existing "no partials, no file lookup" mode, used by the
+  builder's destination-path render path where neither concept is
+  meaningful. New `render.Partial{Name, Src}` carries one auxiliary
+  template source plus a human-readable identifier for parse-error
+  attribution.
+- `internal/render/gotemplate.go` — `Render` parses every partial
+  into the template tree before the main template so `{{ define }}`
+  blocks from any partial become visible to `include` and to
+  recursive `tpl` calls. Execution switches to `ExecuteTemplate(name)`
+  (rather than `Execute`) so the root template is always picked by
+  name even if a partial happens to share it. Parse failures inside
+  a partial wrap as `*render.Error` tagged with the partial's `Name`
+  so the controller's existing `errors.As(_, *render.Error)` mapping
+  still surfaces `RenderFailedReason` against the correct file.
+- `internal/render/helpers.go` — adds `lookupFileFunc`, the per-render
+  binding for the `lookupFile` helper. A nil `LookupFile` (the
+  destination-path path) makes the helper fail at execute time with
+  a clear "not available in this rendering context" message rather
+  than returning an empty string. The `include` helper's doc string
+  catches up with reality: it now has parsed partials to resolve
+  against in the main render path.
+- `internal/render/gotemplate_test.go` / `helpers_test.go` — updated
+  existing call sites for the new four-argument `Render` signature
+  and added focused coverage for partial resolution via `include`,
+  the root-first → leaf-closer ordering rule (closer file wins on a
+  conflicting `define`), partial parse errors wrapping the partial
+  name in `*render.Error`, and the `lookupFile` helper's three
+  modes: round-trip through a bound closure, error on lookup
+  failure, error when the closure is nil.
+- `internal/builder/partials.go` (new) — `discoverPartials` walks
+  from the alias root down toward the template's directory and
+  returns every `_helpers.tpl` file it finds, root-first. Missing
+  files are silently skipped (the common case); irregular entries
+  (symlinks, directories named `_helpers.tpl`) are skipped on
+  purpose so a quirky tree never fails discovery. Reads are
+  size-capped at the same 10 MiB per-file ceiling used by the
+  pipeline `load` verb and the template `from:` read. The file also
+  hosts `newLookupFile`, which returns the `lookupFile` backing
+  closure jailed to the template's alias `*os.Root`; absolute
+  paths, empty paths, and `..` escapes are rejected up-front so
+  spec authors get an error tied to their argument verbatim, with
+  the `os.Root` itself as defence in depth. `cleanLookupPath`
+  factors out the rejection rules so they're testable independently.
+- `internal/builder/builder.go` — `renderTemplate` now calls
+  `discoverPartials` against the template's `srcRoot` / `srcPath`
+  and constructs a `lookupFile` closure over the same `srcRoot`,
+  passing both through to `r.Engine.Render` via `render.Options`.
+  The destination-path render path passes a zero `render.Options`
+  (no partials, no `lookupFile`) — destination paths read in-scope
+  values, not files, and live in the spec rather than in any
+  artifact directory.
+- `internal/builder/partials_test.go` (new) — table-driven coverage
+  for `partialChainDirs` (the directory walk order discovery relies
+  on), `discoverPartials` (no partials → empty slice not error;
+  template at root; root + leaf both present → returned in
+  root-first order with both intact), and the `newLookupFile`
+  closure (round-trip read; rejects absolute / empty / `..` /
+  missing / directory inputs with errors tied to the argument).
+- `internal/controller_test/manifestgenerator_partials_test.go`
+  (new) — envtest integration test. A `ManifestGenerator` whose
+  source tree carries `_helpers.tpl` files at both the alias root
+  and the template's directory reconciles `Ready=True`; the
+  rendered tarball contains a partial defined only at the root, a
+  partial defined only at the leaf, the leaf-overridden version of
+  a partial defined at both layers (proving the closer-wins
+  layering), and content pulled in by `lookupFile`. A separate
+  sub-test replaces the template with one that `include`s an
+  undefined name and asserts the controller stalls with
+  `RenderFailedReason` rather than the generic `BuildFailedReason`.
+
+### Slice-9 spec interpretation
+
+The full §5 surface is now implemented. Spec authors writing
+artifact templates can:
+
+- drop a `_helpers.tpl` next to their template (or anywhere up the
+  directory chain to the alias root) and reach its `{{ define }}`
+  blocks via `include`; closer files override same-named defines
+  from parent directories;
+- call `lookupFile "path/to/file"` from a template to pull a
+  regular file out of the same source alias, with the path
+  interpreted relative to the alias root and confined to it.
+
+The render engine continues to apply `missingkey=zero`, so a
+template that references an undefined value renders the zero value
+rather than aborting; authors that want a hard failure on missing
+input use `required` per value as before.
+
+### Verified
+
+Inside the dev container:
+
+```sh
+make tidy fmt vet manifests generate manager test clean
+kustomize build config/default
+```
+
+`make test` brings up envtest and runs the slice-3 through slice-8
+suites alongside the slice-9 partials + `lookupFile` suite; the
+`internal/builder`, `internal/render`, `internal/values`,
+`internal/pipeline` unit tests run under `go test ./...`.
+
+## 21. Open questions
 
 None blocking. Defer until the relevant slice:
 

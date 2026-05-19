@@ -50,12 +50,19 @@ func NewGoEngine() *GoEngine {
 //     specific value they care about.
 //   - The recursive helpers `tpl` and `include` are bound to the
 //     per-render template tree so they can reach any sub-template
-//     parsed into it. Slice 6 ships no implicit sub-templates;
-//     slice 9 will discover `_helpers.tpl` siblings and parse them
-//     into the same tree.
-func (e *GoEngine) Render(name string, src []byte, data any) ([]byte, error) {
+//     parsed into it. `opts.Partials` are parsed into the same tree
+//     before the main template so their `{{ define }}` blocks become
+//     visible to `include`. The builder discovers `_helpers.tpl`
+//     siblings and passes them here, giving spec authors the Helm
+//     partials experience.
+//   - The `lookupFile` helper is bound to `opts.LookupFile`. The
+//     closure carries the per-render jail (typically the template's
+//     source-artifact root) so a template that calls `lookupFile`
+//     cannot escape its alias scope.
+func (e *GoEngine) Render(name string, src []byte, data any, opts Options) ([]byte, error) {
 	funcs := mgtemplate.FuncMap()
 	addHelmHelpers(funcs)
+	funcs["lookupFile"] = lookupFileFunc(opts.LookupFile)
 
 	t := template.New(name).
 		Funcs(funcs).
@@ -67,12 +74,28 @@ func (e *GoEngine) Render(name string, src []byte, data any) ([]byte, error) {
 		"tpl":     tplFunc(t),
 	})
 
+	// Parse partials first so their `{{ define }}` blocks are
+	// available to the main template (and to any other partial
+	// parsed later). Each partial gets its own associated-template
+	// name for traceability; if two partials redefine the same
+	// sub-template, text/template lets the later parse win, which
+	// matches the builder's root-first → template-closest ordering.
+	for _, p := range opts.Partials {
+		if _, err := t.New(p.Name).Parse(string(p.Src)); err != nil {
+			return nil, &Error{Template: p.Name, Err: fmt.Errorf("parse partial: %w", err)}
+		}
+	}
+
 	if _, err := t.Parse(string(src)); err != nil {
 		return nil, &Error{Template: name, Err: fmt.Errorf("parse: %w", err)}
 	}
 
 	var buf bytes.Buffer
-	if err := t.Execute(&buf, data); err != nil {
+	// ExecuteTemplate by name picks the root template explicitly so
+	// the body parsed above runs even when one of the partials
+	// happens to share the same template name (defensive; the builder
+	// avoids collisions but we shouldn't rely on it).
+	if err := t.ExecuteTemplate(&buf, name, data); err != nil {
 		return nil, &Error{Template: name, Err: fmt.Errorf("execute: %w", err)}
 	}
 	return buf.Bytes(), nil

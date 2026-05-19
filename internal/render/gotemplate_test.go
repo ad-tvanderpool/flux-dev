@@ -86,7 +86,7 @@ func TestGoEngine_Render(t *testing.T) {
 	e := NewGoEngine()
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := e.Render("test", []byte(tc.src), tc.data)
+			out, err := e.Render("test", []byte(tc.src), tc.data, Options{})
 			if tc.wantErr != "" {
 				if err == nil {
 					t.Fatalf("expected error containing %q, got nil (output %q)", tc.wantErr, out)
@@ -114,7 +114,7 @@ func TestGoEngine_Render(t *testing.T) {
 func TestGoEngine_NoEnvLeak(t *testing.T) {
 	e := NewGoEngine()
 	for _, src := range []string{`{{ env "PATH" }}`, `{{ expandenv "$PATH" }}`} {
-		if _, err := e.Render("envtest", []byte(src), nil); err == nil {
+		if _, err := e.Render("envtest", []byte(src), nil, Options{}); err == nil {
 			t.Fatalf("expected parse error for %q, got nil", src)
 		}
 	}
@@ -126,13 +126,113 @@ func TestGoEngine_NoEnvLeak(t *testing.T) {
 // build-path failures (I/O, staging) must NOT match.
 func TestGoEngine_ErrorIsRenderError(t *testing.T) {
 	e := NewGoEngine()
-	_, err := e.Render("t", []byte("{{ .x"), nil)
+	_, err := e.Render("t", []byte("{{ .x"), nil, Options{})
 	var re *Error
 	if !errors.As(err, &re) {
 		t.Fatalf("parse error should be *render.Error: %v", err)
 	}
 	if re.Template != "t" {
 		t.Fatalf("expected Template=%q, got %q", "t", re.Template)
+	}
+}
+
+// TestGoEngine_PartialsResolveViaInclude is the slice-9 happy path
+// for `_helpers.tpl`-style partial discovery: a partial parsed into
+// the same tree publishes a `define` block that the main template
+// reaches via `include`. Without the partial the same template fails
+// with the "not defined" error from includeFunc.
+func TestGoEngine_PartialsResolveViaInclude(t *testing.T) {
+	e := NewGoEngine()
+	main := `{{ include "greet" . }}`
+	partial := Partial{
+		Name: "_helpers.tpl",
+		Src:  []byte(`{{ define "greet" }}hello {{ .name }}{{ end }}`),
+	}
+	out, err := e.Render("main", []byte(main), map[string]any{"name": "core"},
+		Options{Partials: []Partial{partial}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(out) != "hello core" {
+		t.Fatalf("output: got %q want %q", string(out), "hello core")
+	}
+	if _, err := e.Render("main", []byte(main), nil, Options{}); err == nil {
+		t.Fatalf("expected error without partials, got nil")
+	}
+}
+
+// TestGoEngine_PartialOrderingLastWins pins the layering rule: when
+// two partials define the same named sub-template, the later parse
+// wins. The builder passes partials root-first → template-closest so
+// a closer `_helpers.tpl` overrides one from a parent directory.
+func TestGoEngine_PartialOrderingLastWins(t *testing.T) {
+	e := NewGoEngine()
+	parts := []Partial{
+		{Name: "root/_helpers.tpl", Src: []byte(`{{ define "greet" }}from root{{ end }}`)},
+		{Name: "leaf/_helpers.tpl", Src: []byte(`{{ define "greet" }}from leaf{{ end }}`)},
+	}
+	out, err := e.Render("main", []byte(`{{ include "greet" . }}`), nil,
+		Options{Partials: parts})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(out) != "from leaf" {
+		t.Fatalf("output: got %q want %q", string(out), "from leaf")
+	}
+}
+
+// TestGoEngine_PartialParseErrorWrapsName confirms a broken partial
+// surfaces as *render.Error tagged with the partial's name (not the
+// main template's), so the builder can point spec authors at the file
+// that actually failed.
+func TestGoEngine_PartialParseErrorWrapsName(t *testing.T) {
+	e := NewGoEngine()
+	parts := []Partial{{Name: "broken.tpl", Src: []byte(`{{ .x`)}}
+	_, err := e.Render("main", []byte("ok"), nil, Options{Partials: parts})
+	if err == nil {
+		t.Fatal("expected error from broken partial, got nil")
+	}
+	var re *Error
+	if !errors.As(err, &re) {
+		t.Fatalf("partial parse error should be *render.Error: %v", err)
+	}
+	if re.Template != "broken.tpl" {
+		t.Fatalf("expected Template=%q, got %q", "broken.tpl", re.Template)
+	}
+}
+
+// TestGoEngine_LookupFile_BoundClosure exercises the per-render
+// `lookupFile` helper: a non-nil LookupFile in Options makes the
+// helper read through that closure; a nil closure makes the helper
+// fail at execute time with a clear message.
+func TestGoEngine_LookupFile_BoundClosure(t *testing.T) {
+	e := NewGoEngine()
+	files := map[string][]byte{
+		"snippet.txt": []byte("hello from snippet"),
+	}
+	opts := Options{
+		LookupFile: func(p string) ([]byte, error) {
+			b, ok := files[p]
+			if !ok {
+				return nil, errors.New("not found")
+			}
+			return b, nil
+		},
+	}
+	out, err := e.Render("main", []byte(`{{ lookupFile "snippet.txt" }}`), nil, opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(out) != "hello from snippet" {
+		t.Fatalf("output: got %q", string(out))
+	}
+
+	if _, err := e.Render("main", []byte(`{{ lookupFile "missing" }}`), nil, opts); err == nil {
+		t.Fatal("expected error for missing file, got nil")
+	}
+
+	if _, err := e.Render("main", []byte(`{{ lookupFile "snippet.txt" }}`), nil, Options{}); err == nil {
+		t.Fatal("expected error when LookupFile is nil, got nil")
 	}
 }
 
@@ -150,7 +250,7 @@ func TestGoEngine_ConcurrentRender(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(i int) {
 			defer wg.Done()
-			out, err := e.Render("c", []byte(`v={{ .v }}`), map[string]any{"v": i})
+			out, err := e.Render("c", []byte(`v={{ .v }}`), map[string]any{"v": i}, Options{})
 			if err != nil {
 				t.Errorf("goroutine %d: %v", i, err)
 				return

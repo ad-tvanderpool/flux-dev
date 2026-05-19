@@ -26,10 +26,11 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// addHelmHelpers registers the project's Helm-style helpers into the
-// supplied FuncMap. The recursive helpers (`tpl`, `include`) are added
-// in gotemplate.go because they need a *template.Template handle to
-// bind to.
+// addHelmHelpers registers the project's stateless Helm-style helpers
+// into the supplied FuncMap. The recursive helpers (`tpl`, `include`)
+// and the per-render `lookupFile` helper are bound in gotemplate.go
+// because they need either a *template.Template handle or the
+// per-render Options to close over.
 //
 // Helper surface mirrors Helm so spec authors who know the Helm
 // vocabulary can use the same helpers here without surprises:
@@ -111,12 +112,35 @@ func required(msg string, val any) (any, error) {
 	return val, nil
 }
 
+// lookupFileFunc returns a closure suitable for use as the `lookupFile`
+// template helper. The closure delegates to lookup, which the builder
+// constructs once per template render and jails to the template's
+// source-artifact root. A nil lookup means the helper is unavailable
+// in this rendering context (the destination-path render path uses a
+// zero render.Options and so cannot read files); in that case the
+// helper fails at execute time with a clear message rather than
+// silently returning an empty string.
+func lookupFileFunc(lookup func(path string) ([]byte, error)) func(string) (string, error) {
+	return func(path string) (string, error) {
+		if lookup == nil {
+			return "", errors.New("lookupFile: not available in this rendering context")
+		}
+		b, err := lookup(path)
+		if err != nil {
+			return "", fmt.Errorf("lookupFile %q: %w", path, err)
+		}
+		return string(b), nil
+	}
+}
+
 // includeFunc returns a closure suitable for use as the `include`
 // template helper. The closure executes the named sub-template parsed
-// into root and returns the rendered string. Slice 6 ships no
-// implicit sub-templates so calling `include` against a name that is
-// not present surfaces a clear error; slice 9 will discover
-// `_helpers.tpl` siblings and parse them into the same tree.
+// into root and returns the rendered string. Slice 9 wires in
+// auto-discovered `_helpers.tpl` siblings as render.Options.Partials,
+// so a template that calls `include "name"` resolves "name" against
+// any `{{ define "name" }}` block published by those partials.
+// Templates without partials (or that ask for an undefined name) see
+// a clear error rather than a silent empty render.
 func includeFunc(root *template.Template) func(string, any) (string, error) {
 	return func(name string, data any) (string, error) {
 		t := root.Lookup(name)
