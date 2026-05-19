@@ -209,7 +209,7 @@ for each slice live in the slice itself.
 | 3 | End-to-end source-fetch + `ExternalArtifact` publishing (pass-through copy, no pipeline yet). Proves the source-controller integration end-to-end before any pipeline logic. | **Done** |
 | 4 | Pipeline verb: `load` (`yaml` / `json` / `text` / `raw`; single + glob; `as: list` / `as: map` with `keyExpr`) | **Done** |
 | 5 | Pipeline verbs: `filter`, `map`, `group`, `merge` | **Done** |
-| 6 | Template engine interface + Go/Sprig implementation + Helm-style helpers | Not started |
+| 6 | Template engine interface + Go/Sprig implementation + Helm-style helpers | **Done** |
 | 7 | `artifacts.forEach` + multi-template artifacts + output-path templating | Not started |
 | 8 | `values` + `valuesFrom` (`ConfigMap` only) | Not started |
 | 9 | Helm-style partial templates (`_helpers.tpl` resolution) | Not started |
@@ -566,7 +566,109 @@ kustomize build config/default
 alongside the slice-5 verb suite; the `internal/pipeline` unit tests
 run under `go test ./...`.
 
-## 15. Open questions
+## 16. Slice 6 — done
+
+The artifact render engine lands. Each `spec.artifacts[*].templates[*]`
+is now read out of its source artifact, rendered through a Go
+text/template engine with Sprig + Helm-style helpers, and written to
+the staging tarball. Pipeline outputs are exposed at the top of the
+template scope so a template fragment reads a prior step's value as
+`.<stepName>`. `forEach`, `values`, `valuesFrom`, and output-path
+templating continue to be rejected by the validator until their slices
+land (7 and 8). Files added or changed in this slice:
+
+- `internal/template/funcmap.go` (new) — shared Sprig `FuncMap` used
+  by both the pipeline expression evaluator and the render engine.
+  Resolves the slice-5 open question of where to host the helpers
+  once a second consumer arrived. Sprig minus the host-leaking
+  helpers (`env`, `expandenv`) and minus the recursion-only helpers
+  (`include`, `tpl`); the render engine re-binds the recursion-only
+  helpers to its own `*template.Template` so they can reach the
+  parsed template tree.
+- `internal/pipeline/template.go` — `pipelineFuncMap` deleted; the
+  per-item evaluator now calls `mgtemplate.FuncMap` directly. No
+  behavioural change to pipeline expressions.
+- `internal/render/render.go` (new) — `Engine` interface + `Error`
+  type. The interface is intentionally tiny (one method) so a future
+  engine (CEL, Jsonnet) is a drop-in. The `Error` type wraps parse
+  and execute failures so the reconciler can tell render failures
+  apart from I/O / staging failures via `errors.As` and surface
+  `RenderFailedReason` instead of the generic `BuildFailedReason`.
+- `internal/render/gotemplate.go` (new) — `GoEngine`, the default
+  implementation. `missingkey=zero` matches Helm: a missing scope
+  key renders as the zero value rather than aborting. Strict
+  missing-key checks are an explicit `required` call per value.
+- `internal/render/helpers.go` (new) — Helm-style helpers:
+  - `toYaml` / `toJson` — marshal a value, empty string on error
+    (matches Helm so a malformed sub-tree does not abort the
+    surrounding template).
+  - `fromYaml` / `fromJson` — unmarshal into a map; decode errors
+    are surfaced under the `Error` key (matches Helm).
+  - `required` — fails the render with a clear message when the
+    value is `nil` or an empty string.
+  - `tpl` — re-parses a string as a template against a clone of the
+    parent so per-call partials do not leak into the parent tree.
+  - `include` — executes a named sub-template parsed into the same
+    tree. Slice 6 ships no implicit sub-templates; slice 9 will
+    discover `_helpers.tpl` siblings and parse them into the same
+    tree so authors get the Helm partials experience for free.
+  - `lookupFile` is intentionally deferred to slice 9 alongside
+    partial discovery — it has no useful semantics without it.
+- `internal/render/gotemplate_test.go` /
+  `internal/render/helpers_test.go` (new) — table-driven unit
+  coverage for every helper plus the engine contract: literal
+  passthrough, missing-key policy, `env`/`expandenv` are absent,
+  parse / execute failures wrap into `*render.Error`, and the
+  engine is safe for concurrent use.
+- `internal/builder/builder.go` — pass-through copy replaced by
+  single-file template rendering. `from:` must resolve to a regular
+  file; directory references are explicitly rejected (the only
+  coherent fan-a-template-across-files semantics is `forEach`, which
+  lands in slice 7). Each rendered file is size-capped at
+  `maxTemplateFileBytes` (10 MiB) mirroring the pipeline `load`
+  ceiling. `ArtifactBuilder` now carries a `render.Engine` and
+  `Build` accepts a `data map[string]any` template scope.
+- `internal/controller/manifestgenerator_controller.go` — threads
+  pipeline outputs into the builder as the top-level template scope
+  and lazily allocates a `render.NewGoEngine()` if the reconciler
+  was constructed without one. Build failures whose root cause is a
+  `*render.Error` now surface as `RenderFailedReason`; everything
+  else stays `BuildFailedReason`.
+- `internal/controller/manifestgenerator_pipeline.go` — comment
+  refresh; pipeline outputs are now consumed by the render engine.
+- `internal/controller_test/manifestgenerator_render_test.go` (new)
+  — envtest integration test: a `ManifestGenerator` whose template
+  exercises field lookup, Sprig (`upper`), and `toYaml | indent`
+  against a pipeline output reconciles `Ready=True` and the
+  resulting tarball contains the rendered (not source) bytes; a
+  `required` failure with the value absent stalls the object with
+  `RenderFailedReason` rather than `BuildFailedReason`.
+
+### Slice-6 spec interpretation (temporary)
+
+The CRD still admits `values`, `valuesFrom`, and
+`artifacts[*].forEach`; the validator continues to mark the object
+Stalled with `ValidationFailedReason` if any are set. The template
+`to:` field is still treated as a literal path — output-path
+templating lands with `forEach` in slice 7. Slice 8 wires `values` +
+`valuesFrom`; slice 9 adds `_helpers.tpl` discovery so `include` /
+`lookupFile` have something to resolve against.
+
+### Verified
+
+Inside the dev container:
+
+```sh
+make tidy fmt vet manifests generate manager test clean
+kustomize build config/default
+```
+
+`make test` brings up envtest and runs the slice-3 / slice-4 /
+slice-5 suites alongside the slice-6 render suite; the
+`internal/render` and `internal/pipeline` unit tests run under
+`go test ./...`.
+
+## 17. Open questions
 
 None blocking. Defer until the relevant slice:
 
@@ -577,7 +679,4 @@ None blocking. Defer until the relevant slice:
 - Whether `keyExpr` and `where` get a CEL backend in addition to Go
   template fragments. Likely not for v1; revisit if templates feel
   awkward.
-- Whether to factor the pipeline's Sprig FuncMap out into a shared
-  `internal/template` package once slice 6's render engine wants the
-  same surface. Trivial mechanical change; deferred until that slice.
 - Manager image base and CI. Out of scope until v0.1.0 release prep.
