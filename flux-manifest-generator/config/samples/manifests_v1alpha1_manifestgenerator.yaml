@@ -1,20 +1,35 @@
 apiVersion: manifests.fluxcd.tooling/v1alpha1
 kind: ManifestGenerator
 metadata:
-  name: podinfo-passthrough
+  name: campus-delegations
 spec:
-  # Slice 3 ships a literal pass-through copy: each `templates[].from`
-  # is interpreted as a path inside the named source artifact and
-  # copied byte-for-byte to `templates[].to` in the output tarball.
-  # Pipeline / values / valuesFrom / forEach are not yet honored.
+  # Slice 7 ships the full artifact-build surface for v1alpha1 minus
+  # values / valuesFrom (slice 8) and partial-template discovery
+  # (slice 9): a multi-step pipeline, multi-template artifacts, per-
+  # artifact forEach, and Go-template-expanded `to:` paths.
   interval: 5m
   sources:
-    - alias: chart
-      kind: OCIRepository
-      name: podinfo-chart
+    - alias: repo
+      kind: GitRepository
+      name: flux-system
+  pipeline:
+    # Load every campus cluster.yaml into a map keyed by directory.
+    - name: campusClusters
+      load:
+        from: "@repo/clusters/campus/*/cluster.yaml"
+        as: map
+        keyExpr: "{{ .path | dir | base }}"
   artifacts:
-    - name: podinfo
-      revision: "@chart"
+    - name: campus-delegations
+      revision: "@repo"
+      # Fan the templates across the map's entries; `.campus.key` is
+      # the cluster name and `.campus.value` is the parsed YAML
+      # document for that cluster.
+      forEach:
+        from: campusClusters
+        as: campus
       templates:
-        - from: "@chart/values.yaml"
-          to: "@artifact/values.yaml"
+        - from: "@repo/templates/delegation.yaml"
+          to: "@artifact/{{ .campus.key }}/delegation.yaml"
+        - from: "@repo/templates/notes.txt"
+          to: "@artifact/notes/{{ .campus.key }}.txt"

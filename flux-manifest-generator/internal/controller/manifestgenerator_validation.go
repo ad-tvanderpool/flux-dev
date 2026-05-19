@@ -20,17 +20,18 @@ import (
 	"strings"
 
 	mgapi "github.com/tvanderpool/flux-manifest-generator/api/v1alpha1"
+	"github.com/tvanderpool/flux-manifest-generator/internal/builder"
 	"github.com/tvanderpool/flux-manifest-generator/internal/pipeline"
 )
 
 // validateSpec performs runtime validation that cannot be expressed via
 // kubebuilder markers.
 //
-// Slice-5 scope: sources + artifacts + pipeline (all five verbs).
-// values, valuesFrom and per-artifact forEach are still accepted by the
-// CRD schema but rejected here because slices 7–8 have not landed yet.
-// Tighten / relax these checks in the slice that introduces the
-// corresponding feature.
+// Slice-7 scope: sources + artifacts + pipeline (all five verbs) +
+// per-artifact forEach + per-template output-path templating. values
+// and valuesFrom are still accepted by the CRD schema but rejected
+// here because slice 8 has not landed yet. Tighten / relax these
+// checks in the slice that introduces the corresponding feature.
 func (r *ManifestGeneratorReconciler) validateSpec(obj *mgapi.ManifestGenerator) error {
 	aliasMap := make(map[string]bool, len(obj.Spec.Sources))
 	for _, src := range obj.Spec.Sources {
@@ -47,6 +48,7 @@ func (r *ManifestGeneratorReconciler) validateSpec(obj *mgapi.ManifestGenerator)
 		}
 	}
 
+	stepNames := make(map[string]bool, len(obj.Spec.Pipeline))
 	if len(obj.Spec.Pipeline) > 0 {
 		// Compile the pipeline at validation time so syntax errors,
 		// unknown aliases, malformed keyExprs, and slice-5+ verbs all
@@ -55,6 +57,9 @@ func (r *ManifestGeneratorReconciler) validateSpec(obj *mgapi.ManifestGenerator)
 		if _, err := pipeline.Compile(obj.Spec.Pipeline, aliasMap); err != nil {
 			return r.newTerminalErrorFor(obj, mgapi.ValidationFailedReason,
 				"spec.pipeline: %s", err.Error())
+		}
+		for i := range obj.Spec.Pipeline {
+			stepNames[obj.Spec.Pipeline[i].Name] = true
 		}
 	}
 	if obj.Spec.Values != nil {
@@ -77,9 +82,11 @@ func (r *ManifestGeneratorReconciler) validateSpec(obj *mgapi.ManifestGenerator)
 		nameMap[artifact.Name] = true
 
 		if artifact.ForEach != nil {
-			return r.newTerminalErrorFor(obj, mgapi.ValidationFailedReason,
-				"artifact %q: forEach is not yet supported in this controller version",
-				artifact.Name)
+			if !stepNames[artifact.ForEach.From] {
+				return r.newTerminalErrorFor(obj, mgapi.ValidationFailedReason,
+					"artifact %q: forEach.from %q does not name a pipeline step",
+					artifact.Name, artifact.ForEach.From)
+			}
 		}
 
 		if artifact.Revision != "" && !aliasMap[strings.TrimPrefix(artifact.Revision, "@")] {
@@ -103,6 +110,14 @@ func (r *ManifestGeneratorReconciler) validateSpec(obj *mgapi.ManifestGenerator)
 				return r.newTerminalErrorFor(obj, mgapi.ValidationFailedReason,
 					"artifact %q: template references unknown source alias %q",
 					artifact.Name, alias)
+			}
+			// Pre-parse the `to:` path template so syntax errors land
+			// here rather than at build time. The parse is cheap and
+			// catches typos before any source fetch happens.
+			if err := builder.ValidateDestTemplate(t.To); err != nil {
+				return r.newTerminalErrorFor(obj, mgapi.ValidationFailedReason,
+					"artifact %q: template destination %q: %s",
+					artifact.Name, t.To, err.Error())
 			}
 		}
 	}

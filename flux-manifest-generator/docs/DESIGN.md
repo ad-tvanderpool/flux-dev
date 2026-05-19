@@ -210,7 +210,7 @@ for each slice live in the slice itself.
 | 4 | Pipeline verb: `load` (`yaml` / `json` / `text` / `raw`; single + glob; `as: list` / `as: map` with `keyExpr`) | **Done** |
 | 5 | Pipeline verbs: `filter`, `map`, `group`, `merge` | **Done** |
 | 6 | Template engine interface + Go/Sprig implementation + Helm-style helpers | **Done** |
-| 7 | `artifacts.forEach` + multi-template artifacts + output-path templating | Not started |
+| 7 | `artifacts.forEach` + multi-template artifacts + output-path templating | **Done** |
 | 8 | `values` + `valuesFrom` (`ConfigMap` only) | Not started |
 | 9 | Helm-style partial templates (`_helpers.tpl` resolution) | Not started |
 
@@ -668,7 +668,90 @@ slice-5 suites alongside the slice-6 render suite; the
 `internal/render` and `internal/pipeline` unit tests run under
 `go test ./...`.
 
-## 17. Open questions
+## 17. Slice 7 — done
+
+The artifact-build surface for v1alpha1 reaches its final shape (minus
+`values` / `valuesFrom` in slice 8 and `_helpers.tpl` partial discovery
+in slice 9): per-artifact `forEach`, multi-template artifacts, and
+output-path templating all land in this slice. The validator's
+last temporary rejection — `artifacts[*].forEach` — is removed; the
+slice-7 spec interpretation is "everything in §5 except `values` and
+`valuesFrom`". Files added or changed in this slice:
+
+- `internal/builder/builder.go` — refactored so artifact assembly is
+  driven by an iteration plan. `applyArtifact` resolves the plan
+  (one iteration without `forEach`, N iterations with it),
+  `buildIterations` expands a `forEach` over a pipeline output (a
+  `[]any` or `map[string]any`) into a deterministic slice of
+  iterations (sorted-key order for maps, input order for lists),
+  and `applyTemplate` renders one template entry per iteration with
+  the iteration overlay (`{key, value}` for maps, `{index, value}`
+  for lists) applied under `forEach.as`. Per-iteration error
+  messages include the iteration label (`list index:N`, `map key:K`)
+  so a render failure points back at the offending entry.
+- `internal/builder/builder.go` — `renderDestPath` template-expands
+  the `templates[*].to` path against the iteration scope after
+  stripping the fixed `@artifact/` prefix, then cleans the result
+  and rejects `.`, `..` segments, and absolute paths as a defence-
+  in-depth layer on top of the `os.Root`-based jailed write. An
+  in-memory `writtenPaths` map detects two iterations rendering to
+  the same destination so authors get a clear "destination X
+  already written" error instead of a silent overwrite.
+- `internal/builder/desttemplate.go` (new) —
+  `parseDestTemplate` parses-only the path-template fragment using
+  the shared `internal/template.FuncMap`. Used by the validator so
+  syntax errors in `to:` stall with `ValidationFailedReason` at
+  admission rather than at build time. `builder.ValidateDestTemplate`
+  is the exported entry point.
+- `internal/controller/manifestgenerator_validation.go` — drops the
+  `forEach` rejection; instead, when `forEach != nil` the validator
+  checks that `forEach.from` names a declared pipeline step
+  (cheaper than full pipeline forward-reference handling because
+  artifacts run after the entire pipeline). Each `templates[*].to`
+  also flows through `builder.ValidateDestTemplate` for parse-only
+  syntax checks. `values` and `valuesFrom` remain the only rejected
+  spec features.
+- `internal/controller_test/manifestgenerator_foreach_test.go` (new)
+  — envtest integration coverage: map iteration produces one
+  rendered file per entry per template with `.<as>.key`/`.value`
+  bindings; list iteration exposes `.<as>.index`/`.value`;
+  multi-template artifacts emit every template per iteration with
+  templated `to:` paths; an unknown `forEach.from` stalls with
+  `ValidationFailedReason`; a scalar `forEach.from` fails with
+  `BuildFailedReason`; two iterations colliding on the same
+  rendered `to:` path fail with `BuildFailedReason`. A separate
+  `TestManifestGenerator_MultiTemplateNoForEach` test pins the
+  multi-template surface without `forEach` so the no-iteration code
+  path stays exercised end-to-end.
+- `config/samples/manifests_v1alpha1_manifestgenerator.yaml` —
+  rewritten around the slice-7 surface: a `pipeline` load step
+  builds a map keyed by directory and the artifact fans two
+  templates across the map with templated `to:` paths, exercising
+  every new piece in a single example.
+
+### Slice-7 spec interpretation (temporary)
+
+The CRD still admits `values` and `valuesFrom`; the validator
+continues to mark the object Stalled with `ValidationFailedReason`
+if either is set. Slice 8 will replace those rejections. Slice 9
+will add `_helpers.tpl` discovery so `include` / `lookupFile` have
+something to resolve against.
+
+### Verified
+
+Inside the dev container:
+
+```sh
+make tidy fmt vet manifests generate manager test clean
+kustomize build config/default
+```
+
+`make test` brings up envtest and runs the slice-3 / slice-4 /
+slice-5 / slice-6 suites alongside the slice-7 `forEach` and
+multi-template suites; the `internal/builder`, `internal/render`,
+and `internal/pipeline` unit tests run under `go test ./...`.
+
+## 18. Open questions
 
 None blocking. Defer until the relevant slice:
 
