@@ -25,7 +25,12 @@ spec:
       containers:
         - name: manager
           image: tvanderpool/flux-manifest-generator
-          imagePullPolicy: IfNotPresent
+          # The kustomize images patch in config/manager/kustomization.yaml
+          # rewrites the tag to `latest` by default. Pull on every restart
+          # so that a `kubectl apply` of a re-pushed `latest` image
+          # actually picks up the new bits; downstream overlays can swap
+          # in a digest-pinned tag and drop this to IfNotPresent.
+          imagePullPolicy: Always
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

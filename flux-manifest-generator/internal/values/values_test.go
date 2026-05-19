@@ -315,6 +315,52 @@ func TestResolver_TargetPathNested(t *testing.T) {
 	}
 }
 
+func TestResolver_NullValueHonoursTargetPath(t *testing.T) {
+	// Empty string in cm.Data decodes to YAML null. With a non-empty
+	// targetPath the null lands at that path so a later contribution
+	// (or the next reconcile) sees an explicit nil there, rather than
+	// silently dropping the targetPath and contributing nothing.
+	src := cm("ns", "with-null", map[string]string{
+		"v.yaml": "",
+	})
+	r := NewResolver(newFakeClient(src), false)
+	got, err := r.Resolve(context.Background(), mg("ns", "",
+		mgapi.ValuesReference{
+			Kind:       "ConfigMap",
+			Name:       "with-null",
+			ValuesKey:  "v.yaml",
+			TargetPath: "cluster.tier",
+		}))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	want := map[string]any{
+		"cluster": map[string]any{"tier": nil},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v want %#v", got, want)
+	}
+}
+
+func TestResolver_NullValueAtRootIsNoop(t *testing.T) {
+	src := cm("ns", "with-null", map[string]string{
+		"v.yaml": "null",
+	})
+	r := NewResolver(newFakeClient(src), false)
+	got, err := r.Resolve(context.Background(), mg("ns", "",
+		mgapi.ValuesReference{
+			Kind:      "ConfigMap",
+			Name:      "with-null",
+			ValuesKey: "v.yaml",
+		}))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty tree, got %#v", got)
+	}
+}
+
 func TestResolver_TargetPathEmptySegmentRejected(t *testing.T) {
 	src := cm("ns", "x", map[string]string{"v.yaml": "k: v"})
 	r := NewResolver(newFakeClient(src), false)

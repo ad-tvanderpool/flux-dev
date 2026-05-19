@@ -37,6 +37,7 @@ import (
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 
 	mgapi "github.com/tvanderpool/flux-manifest-generator/api/v1alpha1"
+	"github.com/tvanderpool/flux-manifest-generator/internal/render"
 )
 
 // sourceRefIndexKey indexes ManifestGenerators by `<kind>/<ns>/<name>`
@@ -59,6 +60,16 @@ type ManifestGeneratorReconcilerOptions struct {
 func (r *ManifestGeneratorReconciler) SetupWithManager(ctx context.Context,
 	mgr ctrl.Manager,
 	opts ManifestGeneratorReconcilerOptions) error {
+	// Install the default render engine once during setup so the
+	// reconcile path can read Engine without synchronisation: with
+	// MaxConcurrentReconciles > 1, lazily assigning r.Engine inside
+	// Reconcile would be a data race on the field. Callers that need
+	// a custom engine (tests, future engine selectors) set it before
+	// calling SetupWithManager and we keep their choice.
+	if r.Engine == nil {
+		r.Engine = render.NewGoEngine()
+	}
+
 	if err := mgr.GetCache().IndexField(ctx,
 		&mgapi.ManifestGenerator{},
 		sourceRefIndexKey,
@@ -212,11 +223,18 @@ func (r *ManifestGeneratorReconciler) requestsForConfigMapChange(ctx context.Con
 	return reqs
 }
 
-// configMapChangePredicate filters out non-data ConfigMap updates so
-// label-only / annotation-only churn does not trigger reconciles. The
-// metadata-only watch hands us PartialObjectMetadata payloads, so we
-// can only compare resource versions — but a resource-version change
-// is exactly the signal we want (any update touches it).
+// configMapChangePredicate filters out non-RV-bumping ConfigMap events
+// so churn that doesn't touch the object at all is dropped.
+//
+// We deliberately compare resource versions rather than `.data`: the
+// watch is metadata-only (see configMapMeta above) so the informer
+// hands us PartialObjectMetadata payloads with no Data field, and
+// loading the full ConfigMap just to diff its data would defeat the
+// no-cache-for-ConfigMaps policy in cmd/main.go. The resulting
+// over-trigger surface — a no-op `kubectl apply` still bumps the
+// resource version and re-queues every dependent MG — is the
+// correct trade-off here; do NOT "improve" this into a
+// DeepEqual(Data, Data) check.
 var configMapChangePredicate = predicate.Funcs{
 	UpdateFunc: func(e event.UpdateEvent) bool {
 		if e.ObjectOld == nil || e.ObjectNew == nil {

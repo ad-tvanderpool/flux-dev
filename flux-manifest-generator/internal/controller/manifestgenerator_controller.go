@@ -70,10 +70,12 @@ type ManifestGeneratorReconciler struct {
 	DependencyRequeueInterval time.Duration
 	NoCrossNamespaceRefs      bool
 
-	// Engine renders artifact templates. Optional; defaults to
-	// render.NewGoEngine() the first time a reconcile needs it so
-	// callers that do not set it (most tests, the manager binary's
-	// default wiring) get a working renderer for free.
+	// Engine renders artifact templates. Optional; SetupWithManager
+	// installs a render.NewGoEngine() when this field is nil so the
+	// manager binary's default wiring and most tests get a working
+	// renderer for free. Tests that need a custom Engine set it
+	// before calling SetupWithManager. The field is only mutated
+	// during setup, never under concurrent reconciles.
 	Engine render.Engine
 }
 
@@ -89,7 +91,9 @@ type observedSource struct {
 // +kubebuilder:rbac:groups=manifests.fluxcd.tooling,resources=manifestgenerators,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=manifests.fluxcd.tooling,resources=manifestgenerators/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=manifests.fluxcd.tooling,resources=manifestgenerators/finalizers,verbs=update
-// +kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=*,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=gitrepositories;ocirepositories;buckets;helmcharts,verbs=get;list;watch
+// +kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=externalartifacts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=externalartifacts/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=configmaps;secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
@@ -201,9 +205,6 @@ func (r *ManifestGeneratorReconciler) reconcile(ctx context.Context,
 	templateData[pipeline.ValuesKey] = resolvedValues
 
 	eaRefs := make([]mgapi.ExternalArtifactReference, 0, len(obj.Spec.Artifacts))
-	if r.Engine == nil {
-		r.Engine = render.NewGoEngine()
-	}
 	artifactBuilder := builder.New(r.Storage, r.Engine)
 
 	for i := range obj.Spec.Artifacts {
