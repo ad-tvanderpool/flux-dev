@@ -16,18 +16,22 @@ limitations under the License.
 
 // Package builder assembles ManifestGenerator artifact tarballs.
 //
-// In slice 6 the builder is a single-file template renderer: each
-// `templates[].from` is interpreted as a literal path inside the named
-// source artifact, read into memory, rendered through the supplied
-// render.Engine, and written verbatim to `templates[].to` inside the
-// staged tarball. Pipeline outputs are placed at the top level of the
-// template scope so a template can read them as `.<stepName>`.
+// Slice 7 adds two pieces on top of the slice-6 single-file render:
+//   - `spec.artifacts[*].forEach` fans every `templates[*]` entry over
+//     the entries of a pipeline output (a list or map). Each iteration
+//     binds the current item under `.<as>` in the template scope as
+//     `{key, value}` for maps or `{index, value}` for lists.
+//   - `templates[*].to` is itself rendered as a template against the
+//     iteration scope, so each iteration writes to a distinct path.
+//     The same templating is available without `forEach`, but with no
+//     iteration bindings the only useful inputs are pipeline outputs
+//     and inline values.
 //
-// Directory references in `from` are intentionally rejected — once
-// rendering is in play, a directory copy has no well-defined semantics
-// (which template scope, which output names?). Slice 7's `forEach` is
-// the right answer when an author needs to fan a single template over
-// a collection.
+// Directory references in `from` are still rejected — once rendering is
+// in play, a directory copy has no well-defined semantics (which scope,
+// which output names?). Authors that need to fan a template across
+// multiple files use `forEach` over a pipeline `load` step that itself
+// expanded a glob.
 package builder
 
 import (
@@ -36,6 +40,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -55,6 +60,11 @@ import (
 // per-file limit so authors see the same ceiling whichever path they
 // take to read a file.
 const maxTemplateFileBytes int64 = 10 << 20 // 10 MiB
+
+// artifactRefPrefix is the leading sentinel of every `templates[*].to`
+// value. Centralised here so both the parser and the destination-path
+// renderer agree on the exact string.
+const artifactRefPrefix = "@artifact/"
 
 // ArtifactBuilder turns a ManifestArtifact spec plus a set of fetched
 // source-controller artifact directories into a stored tarball.
@@ -76,8 +86,10 @@ func New(storage *gotkstorage.Storage, engine render.Engine) *ArtifactBuilder {
 //
 // data is the template scope. The controller hands the pipeline
 // outputs in (so a template can read `{{ .cluster.name }}`); later
-// slices will fold inline values, valuesFrom, and per-`forEach`
-// bindings into the same map before calling Build.
+// slices will fold inline values and valuesFrom into the same map
+// before calling Build. When spec.ForEach is set, Build looks up the
+// referenced output in data and overlays the iteration binding under
+// spec.ForEach.As for each item.
 func (r *ArtifactBuilder) Build(ctx context.Context,
 	spec *mgapi.ManifestArtifact,
 	sources map[string]string,
@@ -89,7 +101,7 @@ func (r *ArtifactBuilder) Build(ctx context.Context,
 		return nil, fmt.Errorf("failed to create staging dir: %w", err)
 	}
 
-	if err := r.applyTemplates(ctx, spec.Templates, sources, data, stagingDir); err != nil {
+	if err := r.applyArtifact(ctx, spec, sources, data, stagingDir); err != nil {
 		return nil, fmt.Errorf("failed to assemble artifact %q: %w", spec.Name, err)
 	}
 
@@ -127,37 +139,130 @@ func (r *ArtifactBuilder) Build(ctx context.Context,
 	return artifact.DeepCopy(), nil
 }
 
-// applyTemplates resolves each TemplateSpec to a regular file in the
-// named source artifact, renders it through the engine, and writes the
-// rendered bytes to the staging directory.
-func (r *ArtifactBuilder) applyTemplates(ctx context.Context,
-	templates []mgapi.TemplateSpec,
+// applyArtifact resolves the iteration plan for the artifact (one
+// iteration without forEach, N iterations with) and renders every
+// template once per iteration into the staging directory.
+func (r *ArtifactBuilder) applyArtifact(ctx context.Context,
+	spec *mgapi.ManifestArtifact,
 	sources map[string]string,
 	data map[string]any,
 	stagingDir string) error {
-	for _, t := range templates {
+	iters, err := buildIterations(spec, data)
+	if err != nil {
+		return err
+	}
+
+	stagingRoot, err := os.OpenRoot(stagingDir)
+	if err != nil {
+		return fmt.Errorf("failed to open staging root %q: %w", stagingDir, err)
+	}
+	defer stagingRoot.Close()
+
+	// Track destination paths so two iterations rendering the same
+	// `to:` collide loudly rather than silently overwriting one
+	// another. The earlier write would simply be lost otherwise.
+	writtenPaths := make(map[string]string, len(iters)*len(spec.Templates))
+
+	for _, iter := range iters {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := r.applyTemplate(ctx, t, sources, data, stagingDir); err != nil {
-			return fmt.Errorf("template %q -> %q: %w", t.From, t.To, err)
+		iterData := overlayData(data, iter.bindings)
+		for ti := range spec.Templates {
+			t := &spec.Templates[ti]
+			if err := r.applyTemplate(ctx, t, sources, iterData, stagingRoot, writtenPaths, iter.label); err != nil {
+				if iter.label != "" {
+					return fmt.Errorf("template %q -> %q (iteration %s): %w",
+						t.From, t.To, iter.label, err)
+				}
+				return fmt.Errorf("template %q -> %q: %w", t.From, t.To, err)
+			}
 		}
 	}
 	return nil
 }
 
+// iteration is one expansion of an artifact's forEach scope. label is
+// a short, human-readable identifier ("map key:foo", "list index:3")
+// used in error messages so a render failure points back at the
+// offending entry; bindings is the per-iteration template-scope
+// overlay. Both are empty for an artifact without forEach.
+type iteration struct {
+	label    string
+	bindings map[string]any
+}
+
+// buildIterations expands the artifact's forEach into a deterministic
+// slice of iterations. The result is a single empty iteration when
+// forEach is absent — the rest of the build path treats no-forEach as
+// "one iteration with no overlay".
+func buildIterations(spec *mgapi.ManifestArtifact, data map[string]any) ([]iteration, error) {
+	if spec.ForEach == nil {
+		return []iteration{{}}, nil
+	}
+
+	src, ok := data[spec.ForEach.From]
+	if !ok {
+		return nil, fmt.Errorf("forEach.from %q is not defined", spec.ForEach.From)
+	}
+
+	switch v := src.(type) {
+	case []any:
+		iters := make([]iteration, len(v))
+		for i, item := range v {
+			iters[i] = iteration{
+				label: fmt.Sprintf("list index:%d", i),
+				bindings: map[string]any{
+					spec.ForEach.As: map[string]any{
+						"index": i,
+						"value": item,
+					},
+				},
+			}
+		}
+		return iters, nil
+	case map[string]any:
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		iters := make([]iteration, len(keys))
+		for i, k := range keys {
+			iters[i] = iteration{
+				label: fmt.Sprintf("map key:%s", k),
+				bindings: map[string]any{
+					spec.ForEach.As: map[string]any{
+						"key":   k,
+						"value": v[k],
+					},
+				},
+			}
+		}
+		return iters, nil
+	default:
+		return nil, fmt.Errorf("forEach.from %q is not a list or map (got %T)",
+			spec.ForEach.From, src)
+	}
+}
+
+// applyTemplate renders one template entry into the staging directory
+// for the current iteration. writtenPaths records every staged
+// destination so duplicates surface as an error rather than a silent
+// overwrite. iterLabel is empty for artifacts without forEach.
 func (r *ArtifactBuilder) applyTemplate(ctx context.Context,
-	tmpl mgapi.TemplateSpec,
+	tmpl *mgapi.TemplateSpec,
 	sources map[string]string,
 	data map[string]any,
-	stagingDir string) error {
+	stagingRoot *os.Root,
+	writtenPaths map[string]string,
+	iterLabel string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	srcAlias, srcPath, err := parseSourceRef(tmpl.From)
 	if err != nil {
 		return fmt.Errorf("invalid template source: %w", err)
-	}
-	destPath, err := parseArtifactRef(tmpl.To)
-	if err != nil {
-		return fmt.Errorf("invalid template destination: %w", err)
 	}
 
 	srcDir, ok := sources[srcAlias]
@@ -171,12 +276,6 @@ func (r *ArtifactBuilder) applyTemplate(ctx context.Context,
 	}
 	defer srcRoot.Close()
 
-	stagingRoot, err := os.OpenRoot(stagingDir)
-	if err != nil {
-		return fmt.Errorf("failed to open staging root %q: %w", stagingDir, err)
-	}
-	defer stagingRoot.Close()
-
 	srcPath = filepath.Clean(srcPath)
 	info, err := srcRoot.Stat(srcPath)
 	if err != nil {
@@ -186,10 +285,10 @@ func (r *ArtifactBuilder) applyTemplate(ctx context.Context,
 		return fmt.Errorf("failed to stat source %q: %w", srcPath, err)
 	}
 	if !info.Mode().IsRegular() {
-		// Directory `from` is intentionally unsupported in slice 6 — see
-		// the package comment. Once `forEach` lands in slice 7, the
-		// path-templated `to:` is how authors fan a template across a
-		// collection.
+		// Directory `from` is intentionally unsupported. The slice-7
+		// answer for "fan a template across many files" is to load
+		// the files via a pipeline step (e.g. `load` with a glob) and
+		// then forEach over that step's output.
 		return fmt.Errorf("source path %q is not a regular file", srcPath)
 	}
 	if info.Size() > maxTemplateFileBytes {
@@ -197,20 +296,66 @@ func (r *ArtifactBuilder) applyTemplate(ctx context.Context,
 			srcPath, info.Size(), maxTemplateFileBytes)
 	}
 
-	rendered, err := r.renderTemplate(srcRoot, srcPath, tmpl.From, data)
+	destPath, err := r.renderDestPath(tmpl.To, data)
 	if err != nil {
 		return err
 	}
 
-	return writeStagedFile(stagingRoot, destPath, rendered, info.Mode())
+	if prev, ok := writtenPaths[destPath]; ok {
+		return fmt.Errorf("destination %q already written by template %q",
+			destPath, prev)
+	}
+
+	rendered, err := r.renderTemplate(srcRoot, srcPath, tmpl.From, iterLabel, data)
+	if err != nil {
+		return err
+	}
+
+	if err := writeStagedFile(stagingRoot, destPath, rendered, info.Mode()); err != nil {
+		return err
+	}
+	writtenPaths[destPath] = tmpl.From
+	return nil
+}
+
+// renderDestPath template-expands the `@artifact/<path>` reference
+// against the current iteration scope and returns the relative path
+// inside the output tarball. The `@artifact/` prefix is fixed and
+// stripped before rendering so a template fragment cannot accidentally
+// produce or break the prefix.
+func (r *ArtifactBuilder) renderDestPath(toRef string, data map[string]any) (string, error) {
+	if !strings.HasPrefix(toRef, artifactRefPrefix) {
+		return "", fmt.Errorf("invalid template destination %q: must start with %q",
+			toRef, artifactRefPrefix)
+	}
+	pathTemplate := strings.TrimPrefix(toRef, artifactRefPrefix)
+	if pathTemplate == "" {
+		return "", fmt.Errorf("invalid template destination %q: empty path", toRef)
+	}
+
+	out, err := r.Engine.Render("destination:"+toRef, []byte(pathTemplate), data)
+	if err != nil {
+		return "", err
+	}
+	rendered := strings.TrimSpace(string(out))
+	if rendered == "" {
+		return "", fmt.Errorf("template destination %q rendered to empty path", toRef)
+	}
+	cleaned := filepath.Clean(rendered)
+	if cleaned == "." || strings.HasPrefix(cleaned, "..") || filepath.IsAbs(cleaned) {
+		return "", fmt.Errorf("template destination %q rendered to invalid path %q",
+			toRef, rendered)
+	}
+	return cleaned, nil
 }
 
 // renderTemplate reads the source file, runs it through the engine,
 // and returns the rendered bytes. The template name passed to the
-// engine is the original `@alias/<path>` reference from the spec so
+// engine is the original `@alias/<path>` reference from the spec (with
+// the current iteration label appended when forEach is in use) so
 // parse / execute errors point straight back at the spec entry.
 func (r *ArtifactBuilder) renderTemplate(srcRoot *os.Root,
-	srcPath, tmplName string,
+	srcPath, tmplName, iterLabel string,
 	data map[string]any) ([]byte, error) {
 	f, err := srcRoot.Open(srcPath)
 	if err != nil {
@@ -229,11 +374,30 @@ func (r *ArtifactBuilder) renderTemplate(srcRoot *os.Root,
 			srcPath, maxTemplateFileBytes)
 	}
 
-	out, err := r.Engine.Render(tmplName, src, data)
+	name := tmplName
+	if iterLabel != "" {
+		name = tmplName + " (" + iterLabel + ")"
+	}
+	out, err := r.Engine.Render(name, src, data)
 	if err != nil {
 		return nil, fmt.Errorf("render: %w", err)
 	}
 	return out, nil
+}
+
+// overlayData returns a shallow copy of base with the entries of
+// overlay applied on top. Used to fold the per-iteration forEach
+// binding into the existing template scope without mutating the
+// caller's map.
+func overlayData(base, overlay map[string]any) map[string]any {
+	out := make(map[string]any, len(base)+len(overlay))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range overlay {
+		out[k] = v
+	}
+	return out
 }
 
 // parseSourceRef parses an `@<alias>/<path>` reference.
@@ -251,18 +415,21 @@ func parseSourceRef(ref string) (alias, path string, err error) {
 	return parts[0], parts[1], nil
 }
 
-// parseArtifactRef parses an `@artifact/<path>` reference and returns
-// the relative path inside the output tarball.
-func parseArtifactRef(ref string) (string, error) {
-	const prefix = "@artifact/"
-	if !strings.HasPrefix(ref, prefix) {
-		return "", fmt.Errorf("destination must start with %q", prefix)
+// ValidateDestTemplate confirms ref begins with the `@artifact/`
+// prefix and that the templated path portion parses as a Go template.
+// Used by the controller's validator so a malformed `to:` stalls with
+// ValidationFailedReason before any source fetch happens. Execution-
+// time failures (missing keys, runtime template errors) still surface
+// during the build.
+func ValidateDestTemplate(ref string) error {
+	if !strings.HasPrefix(ref, artifactRefPrefix) {
+		return fmt.Errorf("must start with %q", artifactRefPrefix)
 	}
-	rel := strings.TrimPrefix(ref, prefix)
-	if rel == "" {
-		return "", fmt.Errorf("destination path is empty")
+	pathTemplate := strings.TrimPrefix(ref, artifactRefPrefix)
+	if pathTemplate == "" {
+		return fmt.Errorf("empty path")
 	}
-	return rel, nil
+	return parseDestTemplate(pathTemplate)
 }
 
 // writeStagedFile writes rendered to dstPath inside the staging root,
