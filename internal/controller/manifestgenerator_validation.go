@@ -22,16 +22,19 @@ import (
 	mgapi "github.com/tvanderpool/flux-manifest-generator/api/v1alpha1"
 	"github.com/tvanderpool/flux-manifest-generator/internal/builder"
 	"github.com/tvanderpool/flux-manifest-generator/internal/pipeline"
+	"github.com/tvanderpool/flux-manifest-generator/internal/values"
 )
 
 // validateSpec performs runtime validation that cannot be expressed via
 // kubebuilder markers.
 //
-// Slice-7 scope: sources + artifacts + pipeline (all five verbs) +
-// per-artifact forEach + per-template output-path templating. values
-// and valuesFrom are still accepted by the CRD schema but rejected
-// here because slice 8 has not landed yet. Tighten / relax these
-// checks in the slice that introduces the corresponding feature.
+// Slice-8 scope: sources + artifacts + pipeline (all five verbs) +
+// per-artifact forEach + per-template output-path templating + inline
+// `values` and `valuesFrom` (ConfigMap only). The only remaining
+// temporary rejection is for Helm-style `_helpers.tpl` partial
+// discovery, which lands in slice 9 and is rejected by the render
+// engine itself when a template tries to `include` an unparsed
+// partial.
 func (r *ManifestGeneratorReconciler) validateSpec(obj *mgapi.ManifestGenerator) error {
 	aliasMap := make(map[string]bool, len(obj.Spec.Sources))
 	for _, src := range obj.Spec.Sources {
@@ -48,12 +51,32 @@ func (r *ManifestGeneratorReconciler) validateSpec(obj *mgapi.ManifestGenerator)
 		}
 	}
 
+	if obj.Spec.Values != nil {
+		if err := values.ValidateInline(obj.Spec.Values.Raw); err != nil {
+			return r.newTerminalErrorFor(obj, mgapi.ValidationFailedReason,
+				"spec.values: %s", err.Error())
+		}
+	}
+	for i := range obj.Spec.ValuesFrom {
+		ref := &obj.Spec.ValuesFrom[i]
+		if err := values.ValidateTargetPath(ref.TargetPath); err != nil {
+			return r.newTerminalErrorFor(obj, mgapi.ValidationFailedReason,
+				"spec.valuesFrom[%d]: %s", i, err.Error())
+		}
+		if r.NoCrossNamespaceRefs && ref.Namespace != "" && ref.Namespace != obj.Namespace {
+			return r.newTerminalErrorFor(obj, mgapi.AccessDeniedReason,
+				"cross-namespace reference to valuesFrom %s/%s is not allowed",
+				ref.Namespace, ref.Name)
+		}
+	}
+
 	stepNames := make(map[string]bool, len(obj.Spec.Pipeline))
 	if len(obj.Spec.Pipeline) > 0 {
 		// Compile the pipeline at validation time so syntax errors,
-		// unknown aliases, malformed keyExprs, and slice-5+ verbs all
-		// surface as terminal validation failures rather than late
-		// reconcile errors.
+		// unknown aliases, malformed keyExprs, and reserved-name
+		// collisions (e.g. a step named "values" shadowing the
+		// merged tree) all surface as terminal validation failures
+		// rather than late reconcile errors.
 		if _, err := pipeline.Compile(obj.Spec.Pipeline, aliasMap); err != nil {
 			return r.newTerminalErrorFor(obj, mgapi.ValidationFailedReason,
 				"spec.pipeline: %s", err.Error())
@@ -61,14 +84,6 @@ func (r *ManifestGeneratorReconciler) validateSpec(obj *mgapi.ManifestGenerator)
 		for i := range obj.Spec.Pipeline {
 			stepNames[obj.Spec.Pipeline[i].Name] = true
 		}
-	}
-	if obj.Spec.Values != nil {
-		return r.newTerminalErrorFor(obj, mgapi.ValidationFailedReason,
-			"spec.values is not yet supported in this controller version")
-	}
-	if len(obj.Spec.ValuesFrom) > 0 {
-		return r.newTerminalErrorFor(obj, mgapi.ValidationFailedReason,
-			"spec.valuesFrom is not yet supported in this controller version")
 	}
 
 	nameMap := make(map[string]bool, len(obj.Spec.Artifacts))
@@ -86,6 +101,11 @@ func (r *ManifestGeneratorReconciler) validateSpec(obj *mgapi.ManifestGenerator)
 				return r.newTerminalErrorFor(obj, mgapi.ValidationFailedReason,
 					"artifact %q: forEach.from %q does not name a pipeline step",
 					artifact.Name, artifact.ForEach.From)
+			}
+			if artifact.ForEach.As == pipeline.ValuesKey {
+				return r.newTerminalErrorFor(obj, mgapi.ValidationFailedReason,
+					"artifact %q: forEach.as %q is reserved (shadows the .values tree)",
+					artifact.Name, artifact.ForEach.As)
 			}
 		}
 

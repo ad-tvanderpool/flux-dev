@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -42,6 +44,11 @@ import (
 // out efficiently.
 const sourceRefIndexKey string = ".metadata.sourceRef"
 
+// valuesFromRefIndexKey indexes ManifestGenerators by `<ns>/<name>` of
+// every referenced ConfigMap in spec.valuesFrom, so a ConfigMap change
+// only re-enqueues the generators that actually consume it.
+const valuesFromRefIndexKey string = ".metadata.valuesFromRef"
+
 // ManifestGeneratorReconcilerOptions configures the controller
 // builder; mirrors source-watcher's pattern.
 type ManifestGeneratorReconcilerOptions struct {
@@ -58,6 +65,20 @@ func (r *ManifestGeneratorReconciler) SetupWithManager(ctx context.Context,
 		r.indexBySourceRef); err != nil {
 		return fmt.Errorf("failed to set index field %q: %w", sourceRefIndexKey, err)
 	}
+	if err := mgr.GetCache().IndexField(ctx,
+		&mgapi.ManifestGenerator{},
+		valuesFromRefIndexKey,
+		r.indexByValuesFromRef); err != nil {
+		return fmt.Errorf("failed to set index field %q: %w", valuesFromRefIndexKey, err)
+	}
+
+	// ConfigMaps are watched metadata-only so the project's
+	// no-cache-for-ConfigMaps policy (cmd/main.go Client.Cache.DisableFor)
+	// is preserved: the change-event informer only carries object
+	// metadata, and the reconciler re-fetches the live payload
+	// through the APIReader when it actually needs the data.
+	configMapMeta := &metav1.PartialObjectMetadata{}
+	configMapMeta.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("ConfigMap"))
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mgapi.ManifestGenerator{},
@@ -91,6 +112,11 @@ func (r *ManifestGeneratorReconciler) SetupWithManager(ctx context.Context,
 			&sourcev1.ExternalArtifact{},
 			handler.EnqueueRequestsFromMapFunc(r.requestsForSourceChange),
 			builder.WithPredicates(sourceChangePredicate),
+		).
+		Watches(
+			configMapMeta,
+			handler.EnqueueRequestsFromMapFunc(r.requestsForConfigMapChange),
+			builder.WithPredicates(configMapChangePredicate),
 		).
 		WithOptions(controller.Options{RateLimiter: opts.RateLimiter}).
 		Complete(r)
@@ -146,6 +172,58 @@ func (r *ManifestGeneratorReconciler) indexBySourceRef(o client.Object) []string
 		keys = append(keys, fmt.Sprintf("%s/%s/%s", src.Kind, ns, src.Name))
 	}
 	return keys
+}
+
+// indexByValuesFromRef indexes a ManifestGenerator by every ConfigMap
+// reference in spec.valuesFrom.
+func (r *ManifestGeneratorReconciler) indexByValuesFromRef(o client.Object) []string {
+	mg, ok := o.(*mgapi.ManifestGenerator)
+	if !ok {
+		return nil
+	}
+	keys := make([]string, 0, len(mg.Spec.ValuesFrom))
+	for _, ref := range mg.Spec.ValuesFrom {
+		ns := ref.Namespace
+		if ns == "" {
+			ns = mg.Namespace
+		}
+		keys = append(keys, fmt.Sprintf("%s/%s", ns, ref.Name))
+	}
+	return keys
+}
+
+// requestsForConfigMapChange enqueues every ManifestGenerator that
+// references the changed ConfigMap via spec.valuesFrom.
+func (r *ManifestGeneratorReconciler) requestsForConfigMapChange(ctx context.Context, obj client.Object) []reconcile.Request {
+	log := ctrl.LoggerFrom(ctx)
+
+	var list mgapi.ManifestGeneratorList
+	if err := r.List(ctx, &list, client.MatchingFields{
+		valuesFromRefIndexKey: client.ObjectKeyFromObject(obj).String(),
+	}); err != nil {
+		log.Error(err, "failed to list ManifestGenerators for ConfigMap change")
+		return nil
+	}
+
+	reqs := make([]reconcile.Request, len(list.Items))
+	for i, mg := range list.Items {
+		reqs[i].NamespacedName = types.NamespacedName{Name: mg.Name, Namespace: mg.Namespace}
+	}
+	return reqs
+}
+
+// configMapChangePredicate filters out non-data ConfigMap updates so
+// label-only / annotation-only churn does not trigger reconciles. The
+// metadata-only watch hands us PartialObjectMetadata payloads, so we
+// can only compare resource versions — but a resource-version change
+// is exactly the signal we want (any update touches it).
+var configMapChangePredicate = predicate.Funcs{
+	UpdateFunc: func(e event.UpdateEvent) bool {
+		if e.ObjectOld == nil || e.ObjectNew == nil {
+			return false
+		}
+		return e.ObjectOld.GetResourceVersion() != e.ObjectNew.GetResourceVersion()
+	},
 }
 
 // sourceChangePredicate fires only when the source artifact revision

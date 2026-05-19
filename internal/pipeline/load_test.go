@@ -60,7 +60,7 @@ func run(t *testing.T, steps []mgapi.PipelineStep, aliases map[string]bool, sour
 	if err != nil {
 		return nil, err
 	}
-	return ev.Run(context.Background(), sources)
+	return ev.Run(context.Background(), sources, nil)
 }
 
 func TestCompile_RejectsDuplicateStepNames(t *testing.T) {
@@ -427,6 +427,6 @@ func TestLoad_MissingSourceAtRuntime(t *testing.T) {
 	}, map[string]bool{"repo": true})
 	g.Expect(err).ToNot(HaveOccurred())
 
-	_, err = ev.Run(context.Background(), map[string]string{})
+	_, err = ev.Run(context.Background(), map[string]string{}, nil)
 	g.Expect(err).To(MatchError(ContainSubstring("no fetched artifact")))
 }

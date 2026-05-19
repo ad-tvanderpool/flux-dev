@@ -53,6 +53,7 @@ import (
 
 	mgapi "github.com/tvanderpool/flux-manifest-generator/api/v1alpha1"
 	"github.com/tvanderpool/flux-manifest-generator/internal/builder"
+	"github.com/tvanderpool/flux-manifest-generator/internal/pipeline"
 	"github.com/tvanderpool/flux-manifest-generator/internal/render"
 )
 
@@ -174,7 +175,12 @@ func (r *ManifestGeneratorReconciler) reconcile(ctx context.Context,
 		return ctrl.Result{RequeueAfter: r.DependencyRequeueInterval}, nil
 	}
 
-	pipelineOutputs, err := r.runPipeline(ctx, obj, localSources)
+	resolvedValues, err := r.resolveValues(ctx, obj)
+	if err != nil {
+		return r.handleValuesError(ctx, obj, err)
+	}
+
+	pipelineOutputs, err := r.runPipeline(ctx, obj, localSources, resolvedValues)
 	if err != nil {
 		msg := fmt.Sprintf("pipeline failed: %s", err.Error())
 		gotkconditions.MarkFalse(obj, gotkmeta.ReadyCondition, mgapi.PipelineFailedReason, "%s", msg)
@@ -183,14 +189,16 @@ func (r *ManifestGeneratorReconciler) reconcile(ctx context.Context,
 		return ctrl.Result{}, err
 	}
 
-	// Pipeline outputs become the top-level template scope so a
-	// template can read a step's value as `.<stepName>`. Slices 7/8
-	// will fold in forEach bindings and Values/ValuesFrom on top of
-	// this same map before handing it to the builder.
-	templateData := make(map[string]any, len(pipelineOutputs))
+	// Pipeline outputs sit at the top of the render scope so a
+	// template can read a step's value as `.<stepName>`; the merged
+	// `.values` tree from spec.values + spec.valuesFrom is published
+	// alongside under the reserved `values` key (Compile and the
+	// validator both refuse collisions with that name).
+	templateData := make(map[string]any, len(pipelineOutputs)+1)
 	for k, v := range pipelineOutputs {
 		templateData[k] = v
 	}
+	templateData[pipeline.ValuesKey] = resolvedValues
 
 	eaRefs := make([]mgapi.ExternalArtifactReference, 0, len(obj.Spec.Artifacts))
 	if r.Engine == nil {

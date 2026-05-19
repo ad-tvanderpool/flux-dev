@@ -211,7 +211,7 @@ for each slice live in the slice itself.
 | 5 | Pipeline verbs: `filter`, `map`, `group`, `merge` | **Done** |
 | 6 | Template engine interface + Go/Sprig implementation + Helm-style helpers | **Done** |
 | 7 | `artifacts.forEach` + multi-template artifacts + output-path templating | **Done** |
-| 8 | `values` + `valuesFrom` (`ConfigMap` only) | Not started |
+| 8 | `values` + `valuesFrom` (`ConfigMap` only) | **Done** |
 | 9 | Helm-style partial templates (`_helpers.tpl` resolution) | Not started |
 
 Each slice has unit tests in `internal/builder` / `internal/pipeline` /
@@ -751,7 +751,113 @@ slice-5 / slice-6 suites alongside the slice-7 `forEach` and
 multi-template suites; the `internal/builder`, `internal/render`,
 and `internal/pipeline` unit tests run under `go test ./...`.
 
-## 18. Open questions
+## 18. Slice 8 — done
+
+`spec.values` (inline) and `spec.valuesFrom` (`ConfigMap` only) land
+in this slice. The validator's last temporary rejections are gone; the
+only piece of §5 still missing from v1alpha1 is Helm-style partial
+discovery, which arrives with slice 9. Files added or changed in this
+slice:
+
+- `internal/values/values.go` (new) — `Resolver` materialises the
+  merged `.values` tree from `spec.valuesFrom` (in spec order, deep-
+  merged with Helm-style "later wins" semantics) followed by
+  `spec.values` inline. Each `valuesFrom` ConfigMap is fetched live
+  through the supplied `client.Reader` (the controller passes its
+  `APIReader` so the `Client.Cache.DisableFor` policy in `cmd/main.go`
+  is preserved). The `valuesKey` / `targetPath` / `optional` semantics
+  match the CRD docstrings: a single key parses as YAML, no key
+  injects every entry as a string-valued map, and an absent ConfigMap
+  or missing key with `optional: true` collapses to a no-op rather
+  than failing. Cross-namespace ACL is enforced via `AccessError` so
+  the reconciler can surface `AccessDeniedReason` as a terminal
+  condition; live fetch failures become `FetchError` and requeue at
+  the dependency interval as `SourceFetchFailedReason`. The package
+  ships its own `deepMerge` / `deepClone` so a contributing
+  ConfigMap's payload is never mutated through aliasing.
+- `internal/values/values_test.go` (new) — table-driven unit tests
+  covering inline-only, valuesFrom with `valuesKey`, valuesFrom with
+  all keys, targetPath wrapping (single + nested), inline-overrides-
+  valuesFrom, spec-order merging, optional vs non-optional missing CM
+  and key, cross-namespace ACL, empty-segment targetPath rejection,
+  and the inline-non-object rejection. Exported `ValidateInline` and
+  `ValidateTargetPath` cover the admission-time path.
+- `internal/pipeline/pipeline.go` / `template.go` — `Scope` gains a
+  `Values` field; `Evaluator.Run` now accepts the resolved values
+  tree, and `withOutputs` publishes it under the reserved `values`
+  key (also exported as `pipeline.ValuesKey`) so per-item expressions
+  see `.values.<...>` exactly like artifact templates do. `Compile`
+  refuses any step named `values` so the merged tree cannot be
+  shadowed.
+- `internal/controller/manifestgenerator_values.go` (new) — controller-
+  side wiring: `resolveValues` builds a `values.Resolver` against the
+  reconciler's `APIReader` and runs it; `handleValuesError` classifies
+  the result into terminal `AccessDeniedReason` (cross-namespace) vs
+  requeueing `SourceFetchFailedReason` (transient API/data errors)
+  using `errors.As` against the typed sentinels exported by
+  `internal/values`.
+- `internal/controller/manifestgenerator_controller.go` — calls
+  `resolveValues` after the source fetch and threads the result into
+  both `runPipeline` and the artifact builder's `templateData` under
+  the reserved `values` key. The render scope retains its existing
+  shape (`templateData[stepName] = output`) with `.values` published
+  alongside, matching the design's "`.values` plus prior step
+  outputs" root context.
+- `internal/controller/manifestgenerator_pipeline.go` — `runPipeline`
+  now plumbs the resolved values into `Evaluator.Run` so `keyExpr`,
+  `where`, and `expr` fragments can read `.values.<...>`.
+- `internal/controller/manifestgenerator_validation.go` — drops the
+  `values` / `valuesFrom` rejections. New checks: inline values must
+  be an object (or null) via `values.ValidateInline`; every
+  `valuesFrom[].targetPath` parses via `values.ValidateTargetPath`;
+  cross-namespace `valuesFrom` references stall with
+  `AccessDeniedReason` when `--no-cross-namespace-refs` is set; a
+  pipeline-step name of `values` and a `forEach.as` of `values` both
+  stall with `ValidationFailedReason` because they would shadow the
+  merged tree.
+- `internal/controller/manifestgenerator_manager.go` — second cache
+  index `.metadata.valuesFromRef` maps every MG to the
+  `<namespace>/<name>` of each ConfigMap it consumes; a metadata-only
+  `Watches(&metav1.PartialObjectMetadata{Kind:"ConfigMap"})` fans
+  ConfigMap changes back into the MGs that reference them. Metadata-
+  only watching preserves the no-cache-for-ConfigMaps policy: the
+  informer carries only metadata so the controller never holds a
+  long-lived cache of ConfigMap payloads. A small predicate filters
+  out non-resource-version-bumping events so label-only churn does
+  not requeue.
+- `internal/controller_test/manifestgenerator_values_test.go` (new)
+  — envtest integration coverage: inline `spec.values` plus
+  `spec.valuesFrom` together drive a template render and a pipeline
+  `filter.where` (`.values.cluster.tier` selects clusters by tier);
+  an inline key collides with a ConfigMap key and inline wins;
+  updating the ConfigMap triggers a re-render via the metadata-only
+  watch; a non-optional missing ConfigMap surfaces
+  `SourceFetchFailedReason`; an inline non-object value stalls with
+  `ValidationFailedReason`. An optional missing ConfigMap stays
+  Ready=True across the whole test, exercising that path implicitly.
+
+### Slice-8 spec interpretation
+
+The validator no longer rejects any §5 feature. Slice 9 will add
+`_helpers.tpl` discovery so `include` and `lookupFile` have parsed
+partials to resolve against; until then those helpers continue to
+fail at execute time when invoked.
+
+### Verified
+
+Inside the dev container:
+
+```sh
+make tidy fmt vet manifests generate manager test clean
+kustomize build config/default
+```
+
+`make test` brings up envtest and runs the slice-3 through slice-7
+suites alongside the slice-8 values suite; the `internal/values`,
+`internal/pipeline`, `internal/render`, and `internal/builder` unit
+tests run under `go test ./...`.
+
+## 19. Open questions
 
 None blocking. Defer until the relevant slice:
 
