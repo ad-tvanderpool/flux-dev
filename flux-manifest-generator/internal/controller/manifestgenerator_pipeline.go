@@ -29,12 +29,12 @@ import (
 // spec has no pipeline so callers can treat the absence the same as an
 // empty map.
 //
-// The pipeline outputs are not yet consumed by the artifact builder in
-// slice 4 — that wiring lands together with the template engine and
-// forEach in slices 6/7. Running the pipeline here surfaces evaluation
-// failures (missing files, malformed YAML, keyExpr errors) with a clear
-// PipelineFailedReason so spec authors get feedback as soon as their
-// pipeline is wrong, even before any template renders.
+// The pipeline outputs are not yet consumed by the artifact builder —
+// that wiring lands together with the template engine and forEach in
+// slices 6/7. Running the pipeline here surfaces evaluation failures
+// (missing files, malformed YAML, keyExpr / where / expr errors) with
+// a clear PipelineFailedReason so spec authors get feedback as soon as
+// their pipeline is wrong, even before any template renders.
 func (r *ManifestGeneratorReconciler) runPipeline(ctx context.Context,
 	obj *mgapi.ManifestGenerator,
 	sources map[string]string) (pipeline.Outputs, error) {

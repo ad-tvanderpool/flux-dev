@@ -19,9 +19,10 @@ limitations under the License.
 // reconcile time, produces a single named output. Later steps reference
 // earlier outputs by name; ordering is implied by data dependency.
 //
-// Verbs supported in v1: load, filter, map, group, merge. Slice 4
-// implements `load`; the other verbs return a compile-time error here
-// and at the validator until their slice lands.
+// Verbs supported in v1: load, filter, map, group, merge. All five
+// are implemented; only `load` reads source-controller artifacts —
+// `filter`, `map`, `group`, and `merge` reshape the outputs of prior
+// steps.
 package pipeline
 
 import (
@@ -61,6 +62,11 @@ type Evaluator struct {
 // set of source aliases known to the parent ManifestGenerator; load
 // steps that reference an unknown alias are rejected here so the error
 // surfaces at the validator before any artifact fetches happen.
+//
+// Compilation also enforces the forward-reference rule: a step's `from`
+// must name an earlier step. The pipeline is evaluated in spec order;
+// allowing back-references keeps the data-dependency story honest while
+// still failing fast on typos.
 func Compile(spec []mgapi.PipelineStep, aliases map[string]bool) (*Evaluator, error) {
 	seen := make(map[string]bool, len(spec))
 	steps := make([]Step, 0, len(spec))
@@ -69,12 +75,14 @@ func Compile(spec []mgapi.PipelineStep, aliases map[string]bool) (*Evaluator, er
 		if seen[ps.Name] {
 			return nil, fmt.Errorf("step %q: duplicate step name", ps.Name)
 		}
-		seen[ps.Name] = true
 
-		s, err := compileStep(ps, aliases)
+		s, err := compileStep(ps, aliases, seen)
 		if err != nil {
 			return nil, fmt.Errorf("step %q: %w", ps.Name, err)
 		}
+		// Record the name only after a successful compile so a step
+		// cannot reference itself via `from`.
+		seen[ps.Name] = true
 		steps = append(steps, s)
 	}
 	return &Evaluator{steps: steps}, nil
@@ -101,22 +109,22 @@ func (e *Evaluator) Run(ctx context.Context, sources map[string]string) (Outputs
 	return scope.Outputs, nil
 }
 
-// compileStep dispatches on the verb set in the PipelineStep. Slice 4
-// implements only the load verb; the other verbs are reported here
-// rather than silently ignored so that the validator (and any caller
-// that bypasses it) gets a clear error.
-func compileStep(ps *mgapi.PipelineStep, aliases map[string]bool) (Step, error) {
+// compileStep dispatches on the verb set in the PipelineStep. The CRD
+// schema enforces "exactly one verb" at admission time via an
+// XValidation rule; the default case below is the defensive runtime
+// guard for callers that bypass schema validation (e.g. unit tests).
+func compileStep(ps *mgapi.PipelineStep, aliases map[string]bool, seen map[string]bool) (Step, error) {
 	switch {
 	case ps.Load != nil:
 		return compileLoad(ps, aliases)
 	case ps.Filter != nil:
-		return nil, fmt.Errorf("verb `filter` is not yet supported")
+		return compileFilter(ps, seen)
 	case ps.Map != nil:
-		return nil, fmt.Errorf("verb `map` is not yet supported")
+		return compileMap(ps, seen)
 	case ps.Group != nil:
-		return nil, fmt.Errorf("verb `group` is not yet supported")
+		return compileGroup(ps, seen)
 	case ps.Merge != nil:
-		return nil, fmt.Errorf("verb `merge` is not yet supported")
+		return compileMerge(ps, seen)
 	default:
 		return nil, fmt.Errorf("no verb set")
 	}

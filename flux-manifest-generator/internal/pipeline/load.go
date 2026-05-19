@@ -158,7 +158,7 @@ func (s *loadStep) Eval(ctx context.Context, scope *Scope) (any, error) {
 	if s.asMap {
 		result := make(map[string]any, len(items))
 		for _, it := range items {
-			key, err := s.keyExpr.eval(it.rel, scope)
+			key, err := s.keyExpr.eval(map[string]any{"path": it.rel}, scope)
 			if err != nil {
 				return nil, fmt.Errorf("keyExpr for %q: %w", it.rel, err)
 			}
